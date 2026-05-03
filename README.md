@@ -7,4 +7,6 @@ This tool package aims at utilizing the ability of sensitivity analysis to reduc
 The sensitivity index, specified as $\partial A/\partial \theta$, where $A$ and $\theta$ refer to an integrated species source term and a perturbation parameter, respectively, is used to evaluate how important a species is under a given set of conditions. 
 ### Operation 
 The code GA-SiG.py is used to obtain the interaction coefficient between any two species. 
+
+The code graph_search_to_importance.py evaluates the species importance indices via the r_AB given by GA-SiG.py. 
 ### Recommended input format 
