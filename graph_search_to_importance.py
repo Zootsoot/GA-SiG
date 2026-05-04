@@ -53,8 +53,7 @@ def overall_importance(
 def sensitivity_mechanism_rank_from_rAB(
     mech_yaml: str,
     r_AB_global: np.ndarray,
-    target_species: List[str],
-    verbose: bool = False,
+    target_species: List[str]
 ):
     
     gas = ct.Solution(mech_yaml)
@@ -75,12 +74,11 @@ def sensitivity_mechanism_rank_from_rAB(
         else:
             print(f"[WARN] Target species '{name}' not in mechanism; ignoring.")
 
-    if verbose:
-        print("=== Sensitivity-based r_AB ranking ===")
-        print(f"Mechanism: {mech_yaml}")
-        print(f"Number of species: {nsp}")
-        print(f"Targets: {target_species}")
-        print(f"Valid target indices: {target_indices}")
+    print("=== Sensitivity-based r_AB ranking ===")
+    print(f"Mechanism: {mech_yaml}")
+    print(f"Number of species: {nsp}")
+    print(f"Targets: {target_species}")
+    print(f"Valid target indices: {target_indices}")
 
     if not target_indices:
         importance = np.zeros(nsp, dtype=float)
@@ -93,10 +91,9 @@ def sensitivity_mechanism_rank_from_rAB(
     ]
     ranked_species.sort(key=lambda x: x[1])  # least -> most important
 
-    if verbose:
-        print("\nTop 15 most important species (by sensitivity-based importance):")
-        for name, val in ranked_species[-15:]:
-            print(f"  {name:15s}  I = {val:.4e}")
+    print("\nTop 15 most important species (by sensitivity-based importance):")
+    for name, val in ranked_species[-15:]:
+        print(f"  {name:15s}  I = {val:.4e}")
 
     return gas, species_names, importance, ranked_species
 
@@ -111,6 +108,5 @@ if __name__ == '__main__':
         sensitivity_mechanism_rank_from_rAB(
             mech_yaml=mech,   # 'mech' is already defined in your notebook as "chem_1111.yaml"
             r_AB_global=r_AB_global,
-            target_species=target_species,
-            verbose=True,
+            target_species=target_species
         )
