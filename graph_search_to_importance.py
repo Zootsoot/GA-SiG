@@ -106,7 +106,7 @@ if __name__ == '__main__':
     # === Sensitivity-based ranking ===
     gas_sens, species_names_sens, global_imp_sens, ranked_species_sens = \
         sensitivity_mechanism_rank_from_rAB(
-            mech_yaml=mech,   # 'mech' is already defined in your notebook as "chem_1111.yaml"
+            mech_yaml=mech, 
             r_AB_global=r_AB_global,
             target_species=target_species
         )
