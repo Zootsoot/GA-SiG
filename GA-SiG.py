@@ -325,4 +325,4 @@ if __name__ == '__main__':
     print("S_AB_global shape:", S_AB_global.shape)  # (Ns, Ns)
     print("r_AB_global shape:", r_AB_global.shape)  # (Ns, Ns)
 
-    np.save("PATH TO SAVE", r_AB_global)
+    np.save("r_AB.npy", r_AB_global)
