@@ -110,3 +110,5 @@ if __name__ == '__main__':
             r_AB_global=r_AB_global,
             target_species=target_species
         )
+
+    np.save('ranked_sp.npy', ranked_species_sens)
