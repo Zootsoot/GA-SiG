@@ -11,6 +11,7 @@ GA-SiG was constructed and tested under the following software environment:
 | Package / Software | Version |
 |--------------------|---------|
 | Python             | 3.11.9  |
+| NumPy              | 1.26.4  |
 | Cantera            | 3.2.0   |
 | PyTorch            | 2.8.0+cu126 |
 
