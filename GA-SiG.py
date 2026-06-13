@@ -294,7 +294,7 @@ if __name__ == '__main__':
 
     ct.suppress_thermo_warnings()
     kin = TorchMassActionKinetics(
-        "PATH TO MECHNISM", # .yaml
+        "YOUR MECHNISM", # .yaml
         device="cuda", 
         dtype=torch.float64,
     )
@@ -302,13 +302,13 @@ if __name__ == '__main__':
     theta0 = np.zeros(kin.Nr, dtype=np.float64)
 
     # Load trajectories
-    time_np = np.load("PATH TO TIME TRAJECTORIES", allow_pickle=True).item()   # Python dic. (.npy) {N_traj: (Nt,)} 
-    T_np    = np.load("PATH TO TEMPERATURE TRAJECTORIES", allow_pickle=True).item()   # Python dic. (.npy) {N_traj: (Nt,)} 
-    P_np    = np.load("PATH TO PRESSURE TRAJECTORIES", allow_pickle=True).item()   # Python dic. (.npy) {N_traj: (Nt,)} 
-    Y_np    = np.load("PATH TO SPECIES MASS FRACTION TRAJECTORIES", allow_pickle=True).item()   # Python dic. (.npy) {N_traj: (Nt, Ns)} 
+    time_np = np.load("YOUR TIME TRAJECTORIES", allow_pickle=True).item()   # Python dic. (.npy) {N_traj: (Nt,)} 
+    T_np    = np.load("YOUR TEMPERATURE TRAJECTORIES", allow_pickle=True).item()   # Python dic. (.npy) {N_traj: (Nt,)} 
+    P_np    = np.load("YOUR PRESSURE TRAJECTORIES", allow_pickle=True).item()   # Python dic. (.npy) {N_traj: (Nt,)} 
+    Y_np    = np.load("YOUR SPECIES MASS FRACTION TRAJECTORIES", allow_pickle=True).item()   # Python dic. (.npy) {N_traj: (Nt, Ns)} 
 
     # Load end time index
-    idx_target = np.load("PATH TO END TIME INDEX") # Numpy arr. (.npy) (N_traj)
+    idx_target = np.load("YOUR END TIME INDEX") # Numpy arr. (.npy) (N_traj)
 
     # Sensitivity integration (implicit Euler)
     S_global, S_AB_global, r_AB_global = aggregate_S_AB_over_trajectories(
