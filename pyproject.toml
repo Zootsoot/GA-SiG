@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gasig"
+version = "0.2.0"
+description = "GPU-Aided Sensitivity-in-Graph: sensitivity-based species ranking for kinetic mechanism reduction"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10,<3.13"
+authors = [{ name = "Yun-Jui Wu" }]
+dependencies = [
+    "numpy>=1.24,<3",
+    "cantera>=3.1,<3.3",
+    "torch>=2.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+gasig = "gasig.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["gasig*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: end-to-end tests that run Cantera solvers (minutes on CPU)",
+    "gpu: tests that need a CUDA device",
+]

@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# GA-SiG CPU-only image: PyTorch 2.8.0 (CPU build) + Cantera 3.2.0 on Python 3.11.
+# About one tenth of the size of the CUDA image. Use it on machines without an NVIDIA GPU.
+#
+# Build:  docker build -f Dockerfile.cpu -t ga-sig:cpu .
+# Run:    docker run --rm -v "<run folder>:/workspace" ga-sig:cpu run config.json
+
+FROM python:3.11-slim AS deps
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0" \
+    && pip install "numpy==1.26.4" "cantera==3.2.0" "pytest>=7"
+
+FROM deps AS app
+
+WORKDIR /opt/ga-sig
+COPY pyproject.toml README.md LICENSE ./
+COPY gasig ./gasig
+RUN pip install --no-deps .
+
+WORKDIR /workspace
+ENTRYPOINT ["python", "-m", "gasig"]
+CMD ["--help"]

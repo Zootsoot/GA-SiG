@@ -1,0 +1,45 @@
+{
+  "mechanism": "USCMechII.yaml",
+  "device": "auto",
+  "output_dir": "results_ch4",
+  "sensitivity": {
+    "rate_law": "original",
+    "substep_tol": null
+  },
+  "aggregation": {
+    "abs_S": true,
+    "normalization": "S_AB_row_sum"
+  },
+  "idt": {
+    "enabled": true,
+    "source": "solver",
+    "solver": {
+      "fuel": {"CH4": 1.0},
+      "oxidizer": {"O2": 0.21, "N2": 0.79},
+      "T_K": [1200.0, 1400.0, 1600.0],
+      "P_atm": [1.0, 10.0],
+      "phi": [0.5, 1.0],
+      "reactor": "constant_volume",
+      "end_time_s": 0.05,
+      "reference_species": "OH"
+    }
+  },
+  "fs": {
+    "enabled": true,
+    "source": "solver",
+    "flame_tip_T_fraction": 0.99,
+    "solver": {
+      "fuel": {"CH4": 1.0},
+      "oxidizer": {"O2": 0.21, "N2": 0.79},
+      "T_unburnt_K": 300.0,
+      "P_atm": [1.0],
+      "phi": [0.8, 1.0, 1.2],
+      "domain_width_m": 0.03
+    }
+  },
+  "ranking": {
+    "target_species": ["CH4", "O2", "OH", "H2O", "CO2"],
+    "combine": "hybrid",
+    "hybrid_weight_idt": 0.5
+  }
+}

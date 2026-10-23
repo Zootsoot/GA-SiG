@@ -1,0 +1,19 @@
+# Private material: manuscript sources, figures and notebooks with account metadata
+not-to-track/
+
+# Local tool configuration
+.codex/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Run outputs (the package writes into the output_dir named in the config)
+results/
+results_*/
+*.log

@@ -1,0 +1,28 @@
+# Two ways to run GA-SiG in a container. Both mount the example folder as the
+# run folder; change the volume to point at your own run folder.
+#
+#   docker compose run --rm gasig run config_ch4_solver.json
+#   docker compose run --rm gasig-cpu run config_ch4_solver.json
+services:
+  gasig:
+    build: .
+    image: ga-sig:latest
+    working_dir: /workspace
+    volumes:
+      - ./example:/workspace
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  gasig-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: ga-sig:cpu
+    working_dir: /workspace
+    volumes:
+      - ./example:/workspace

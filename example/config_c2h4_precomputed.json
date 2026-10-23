@@ -1,0 +1,27 @@
+{
+  "mechanism": "USCMechII.yaml",
+  "device": "auto",
+  "output_dir": "results_c2h4",
+  "sensitivity": {
+    "rate_law": "original",
+    "substep_tol": null
+  },
+  "aggregation": {
+    "abs_S": true,
+    "normalization": "S_AB_row_sum"
+  },
+  "idt": {
+    "enabled": true,
+    "source": "precomputed",
+    "precomputed": {
+      "time": "c2h4_traj_all.npy",
+      "T": "c2h4_T_all.npy",
+      "P": "c2h4_P_all.npy",
+      "Y": "c2h4_Y_all.npy",
+      "index": "c2h4_index_all.npy"
+    }
+  },
+  "ranking": {
+    "target_species": ["C2H4", "O2", "OH", "H2O", "HO2", "CO2"]
+  }
+}

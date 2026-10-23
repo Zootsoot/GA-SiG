@@ -1,0 +1,7 @@
+# Only the package and its metadata go into the image. Data is mounted at run time.
+*
+!gasig/
+!pyproject.toml
+!README.md
+!LICENSE
+gasig/__pycache__/
