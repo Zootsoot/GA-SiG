@@ -17,3 +17,8 @@ dist/
 results/
 results_*/
 *.log
+
+# Internal documents; only the user guide is released
+docs/design.md
+docs/roadmap.md
+docs/notes/

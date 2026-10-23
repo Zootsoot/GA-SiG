@@ -56,7 +56,7 @@ log = logging.getLogger("gasig.reduce")
 IDT_KEYS = ("fuel", "oxidizer", "T_K", "P_atm", "phi", "reactor", "end_time_s", "reference_species",
             "ignition_criterion", "rtol", "atol", "max_steps")
 FS_KEYS = ("fuel", "oxidizer", "T_unburnt_K", "P_atm", "phi", "domain_width_m", "transport_model", "loglevel")
-CSV_FIELDS = ["n_species", "n_reactions", "max_idt_error", "mean_idt_error", "n_unignited",
+CSV_FIELDS = ["n_species", "n_reactions", "max_idt_error", "mean_idt_error", "n_unignited", "n_solver_failures",
               "max_fs_error", "complete", "removed_in_step", "seconds"]
 
 
@@ -182,41 +182,69 @@ def _json_safe(obj):
     return obj
 
 
+def _failure_text(exc: Exception) -> str:
+    """The first informative line of a Cantera error message."""
+    lines = [ln.strip() for ln in str(exc).splitlines() if ln.strip() and not ln.strip().startswith("*")]
+    return " ".join(lines[:2])[:160] if lines else exc.__class__.__name__
+
+
 def _idt_values(gas: ct.Solution, conditions: list[tuple[float, float, float]], idt_cfg: dict, label: str,
                 tol: float | None = None, reference: list[float] | None = None,
-                order: list[int] | None = None) -> tuple[list, int, bool]:
+                order: list[int] | None = None, on_failure: str = "inf") -> tuple[list, int, bool, int]:
     """Ignition delay times at the conditions; unignited cases give inf.
 
     With ``tol`` and ``reference`` the conditions are evaluated in ``order``
     and the loop stops at the first condition whose error exceeds ``tol``.
-    Conditions that were not evaluated hold ``None``. The third value says
-    whether every condition was evaluated.
+    Conditions that were not evaluated hold ``None``. A Cantera failure of
+    the integrator counts as a failed condition (inf) and is logged, unless
+    ``on_failure`` is ``"raise"``. The result is ``(taus, n_unignited,
+    complete, n_failed)``.
     """
     taus: list = [None] * len(conditions)
     n_unignited = 0
+    n_failed = 0
     indices = list(order) if order is not None else list(range(len(conditions)))
     evaluated = 0
     for i in indices:
         T0, P0, phi = conditions[i]
-        traj = run_idt("", None, T0, P0, phi, idt_cfg, label=f"{label}-c{i}", gas=gas)
-        if traj.meta["ignited"]:
-            tau = float(traj.meta["tau_ign_s"])
-        else:
+        try:
+            traj = run_idt("", None, T0, P0, phi, idt_cfg, label=f"{label}-c{i}", gas=gas)
+        except ct.CanteraError as exc:
+            if on_failure == "raise":
+                raise
+            log.warning("%s-c%d: T0=%.0f K, P0=%.2f atm, phi=%.2f: the integrator failed (%s); "
+                        "the condition counts as failed.", label, i, T0, P0 / ct.one_atm, phi, _failure_text(exc))
             tau = float("inf")
-            n_unignited += 1
+            n_failed += 1
+        else:
+            if traj.meta["ignited"]:
+                tau = float(traj.meta["tau_ign_s"])
+            else:
+                tau = float("inf")
+                n_unignited += 1
         taus[i] = tau
         evaluated += 1
         if tol is not None and reference is not None:
             err = abs(tau - reference[i]) / abs(reference[i])
             if not err <= tol:          # also stops on nan
                 break
-    return taus, n_unignited, evaluated == len(conditions)
+    return taus, n_unignited, evaluated == len(conditions), n_failed
 
 
-def _fs_values(gas: ct.Solution, conditions: list[tuple[float, float]], fs_cfg: dict, label: str) -> list[float]:
+def _fs_values(gas: ct.Solution, conditions: list[tuple[float, float]], fs_cfg: dict, label: str,
+               on_failure: str = "inf") -> list[float]:
+    """Flame speeds at the conditions; a Cantera failure gives inf unless ``on_failure`` is ``"raise"``."""
     speeds = []
     for i, (P, phi) in enumerate(conditions):
-        traj = run_flame("", None, P, phi, fs_cfg, label=f"{label}-f{i}", gas=gas)
+        try:
+            traj = run_flame("", None, P, phi, fs_cfg, label=f"{label}-f{i}", gas=gas)
+        except ct.CanteraError as exc:
+            if on_failure == "raise":
+                raise
+            log.warning("%s-f%d: P=%.2f atm, phi=%.2f: the flame solver failed (%s); the condition counts as failed.",
+                        label, i, P / ct.one_atm, phi, _failure_text(exc))
+            speeds.append(float("inf"))
+            continue
         speeds.append(float(traj.meta["flame_speed_m_s"]))
     return speeds
 
@@ -285,20 +313,42 @@ def sweep(cfg: dict, out_dir: Path) -> dict:
              len(conditions), f", {len(fs_conds)} flames" if evaluate_fs else "",
              f", tolerance {100.0 * tol:.3g}%{' with early exit' if early_exit else ''}" if tol is not None else "")
     t0 = time.perf_counter()
-    ref_tau, n_un, _ = _idt_values(gas_full, conditions, idt_cfg, "full")
+    ref_tau, n_un, _, _ = _idt_values(gas_full, conditions, idt_cfg, "full", on_failure="raise")
     if n_un:
         raise RuntimeError(f"{n_un} of {len(conditions)} conditions do not ignite with the detailed mechanism; "
                            "change reduction.idt (end_time_s, max_steps or the conditions).")
     if any(t <= 0.0 for t in ref_tau):
         raise RuntimeError("a condition ignites at the first sample with the detailed mechanism, so the relative "
                            "error is undefined; change reduction.idt (the conditions or the ignition criterion).")
-    ref_sl = _fs_values(gas_full, fs_conds, fs_cfg, "full") if evaluate_fs else []
+    ref_sl = _fs_values(gas_full, fs_conds, fs_cfg, "full", on_failure="raise") if evaluate_fs else []
     log.info("detailed mechanism: IDT %s s%s (%.1f s)", ["%.3e" % t for t in ref_tau],
              f", S_L {['%.4f' % s for s in ref_sl]} m/s" if evaluate_fs else "", time.perf_counter() - t0)
 
     csv_path = out_dir / "reduction_sweep.csv"
     json_path = out_dir / "reduction_sweep.json"
     rows: list[dict] = []
+    search_info: dict = {"mode": mode, "early_exit": bool(early_exit)}
+    base = {
+        "mechanism": cfg["mechanism"], "n_species_full": N, "n_reactions_full": gas_full.n_reactions,
+        "protected_species": sorted(protected), "step": step, "min_species": min_species,
+        "species_order": names, "removal_order": removal_order,
+        "idt_conditions": [{"T_K": T, "P_atm": P / ct.one_atm, "phi": phi} for T, P, phi in conditions],
+        "fs_conditions": [{"P_atm": P / ct.one_atm, "phi": phi} for P, phi in fs_conds],
+        "reference_idt_s": ref_tau, "reference_flame_speed_m_s": ref_sl,
+        "error_tolerance": tol, "search": search_info,
+        "files": {"csv": str(csv_path), "json": str(json_path)},
+    }
+
+    def write_json(status: str, **extra) -> None:
+        """Write the JSON record; unignited and failed cases are inf in memory and null in the file."""
+        payload = {**base, "status": status, **extra, "seconds": round(time.perf_counter() - t0, 2)}
+        try:
+            tmp_path = json_path.with_suffix(".json.tmp")
+            with tmp_path.open("w", encoding="utf-8") as fh:
+                json.dump(_json_safe(payload), fh, indent=2, allow_nan=False)
+            os.replace(tmp_path, json_path)
+        except OSError as exc:
+            log.warning("could not write %s (%s).", json_path, exc)
 
     def ordered_rows() -> list[dict]:
         """Rows from the largest to the smallest size, with the species removed between consecutive rows."""
@@ -321,10 +371,13 @@ def sweep(cfg: dict, out_dir: Path) -> dict:
                     writer.writerow({k: ("" if r.get(k) is None else r.get(k)) for k in CSV_FIELDS})
             os.replace(tmp_path, csv_path)
         except OSError as exc:
-            log.warning("could not write %s (%s); the rows stay in memory and go to the JSON file.", csv_path, exc)
+            log.warning("could not write %s (%s); the rows stay in memory.", csv_path, exc)
+        search_info["evaluations"] = len(rows) - 1
+        write_json("running", rows=ordered_rows())
 
     record({"n_species": N, "n_reactions": gas_full.n_reactions, "max_idt_error": 0.0,
-            "mean_idt_error": 0.0, "n_unignited": 0, "max_fs_error": 0.0 if evaluate_fs else None,
+            "mean_idt_error": 0.0, "n_unignited": 0, "n_solver_failures": 0,
+            "max_fs_error": 0.0 if evaluate_fs else None,
             "complete": True, "seconds": round(time.perf_counter() - t0, 2),
             "idt_s": ref_tau, "flame_speed_m_s": ref_sl})
 
@@ -338,8 +391,8 @@ def sweep(cfg: dict, out_dir: Path) -> dict:
         t_step = time.perf_counter()
         gas_red = reduced_solution(gas_full, keep, transport)
         order = [int(i) for i in np.argsort(-condition_errors, kind="stable")] if early_exit else None
-        taus, n_un, complete = _idt_values(gas_red, conditions, idt_cfg, f"n{n}",
-                                           tol=tol if early_exit else None, reference=ref_tau, order=order)
+        taus, n_un, complete, n_failed = _idt_values(gas_red, conditions, idt_cfg, f"n{n}",
+                                                     tol=tol if early_exit else None, reference=ref_tau, order=order)
         err = _relative_errors(taus, ref_tau)
         seen = np.isfinite(err) | np.isinf(err)
         condition_errors[seen] = np.where(np.isinf(err[seen]), 1e300, err[seen])
@@ -349,7 +402,7 @@ def sweep(cfg: dict, out_dir: Path) -> dict:
             "n_species": gas_red.n_species, "n_reactions": gas_red.n_reactions,
             "max_idt_error": worst,
             "mean_idt_error": float(np.mean(finite)) if finite.size else float("inf"),
-            "n_unignited": n_un, "complete": bool(complete), "idt_s": taus,
+            "n_unignited": n_un, "n_solver_failures": n_failed, "complete": bool(complete), "idt_s": taus,
         }
         if evaluate_fs and complete:
             speeds = _fs_values(gas_red, fs_conds, fs_cfg, f"n{n}")
@@ -359,12 +412,12 @@ def sweep(cfg: dict, out_dir: Path) -> dict:
             row["max_fs_error"] = None
         row["seconds"] = round(time.perf_counter() - t_step, 2)
         record(row)
-        log.info("%4d species %5d reactions  max IDT error %8.3f%%%s  unignited %d  (%.1f s)",
+        log.info("%4d species %5d reactions  max IDT error %8.3f%%%s  unignited %d%s  (%.1f s)",
                  row["n_species"], row["n_reactions"], 100.0 * worst,
-                 "" if complete else " (lower bound, early exit)", n_un, row["seconds"])
+                 "" if complete else " (lower bound, early exit)", n_un,
+                 f"  solver failures {n_failed}" if n_failed else "", row["seconds"])
         return worst
 
-    search_info: dict = {"mode": mode, "early_exit": bool(early_exit)}
     result = None
     if mode == "full":
         if stop_error is not None:
@@ -432,24 +485,11 @@ def sweep(cfg: dict, out_dir: Path) -> dict:
     for limit in (0.05, 0.10, 0.20):
         ok = [r["n_species"] for r in table if r["complete"] and r["max_idt_error"] <= limit]
         thresholds[f"{int(limit * 100)}%"] = min(ok) if ok else None
-    summary = {
-        "mechanism": cfg["mechanism"], "n_species_full": N, "n_reactions_full": gas_full.n_reactions,
-        "protected_species": sorted(protected), "step": step, "min_species": min_species,
-        "species_order": names, "removal_order": removal_order,
-        "idt_conditions": [{"T_K": T, "P_atm": P / ct.one_atm, "phi": phi} for T, P, phi in conditions],
-        "fs_conditions": [{"P_atm": P / ct.one_atm, "phi": phi} for P, phi in fs_conds],
-        "reference_idt_s": ref_tau, "reference_flame_speed_m_s": ref_sl,
-        "error_tolerance": tol,
-        "search": search_info,
-        "selection": {"strict_optimum": strict, "robust_optimum": robust, "robust_window": window,
-                      "selected": selected, "mechanism_file": None if mech_file is None else str(mech_file)},
-        "smallest_mechanism_within": thresholds,
-        "rows": table, "seconds": round(time.perf_counter() - t0, 2),
-        "files": {"csv": str(csv_path), "json": str(json_path)},
-    }
-    # Unignited cases are inf in memory and in the CSV; the JSON file gets null (standard JSON).
-    with json_path.open("w", encoding="utf-8") as fh:
-        json.dump(_json_safe(summary), fh, indent=2, allow_nan=False)
+    selection = {"strict_optimum": strict, "robust_optimum": robust, "robust_window": window,
+                 "selected": selected, "mechanism_file": None if mech_file is None else str(mech_file)}
+    write_json("complete", selection=selection, smallest_mechanism_within=thresholds, rows=table)
+    summary = {**base, "status": "complete", "selection": selection, "smallest_mechanism_within": thresholds,
+               "rows": table, "seconds": round(time.perf_counter() - t0, 2)}
     log.info("smallest complete mechanism within 5%% / 10%% / 20%% IDT error: %s / %s / %s species; "
              "%d evaluations; results in %s (%.1f s)", thresholds["5%"], thresholds["10%"], thresholds["20%"],
              search_info["evaluations"], csv_path, summary["seconds"])

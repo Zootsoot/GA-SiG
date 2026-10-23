@@ -101,7 +101,7 @@ Table 1. Main configuration keys
 | `idt.solver.reactor` | string | `constant_volume` | `constant_volume` or `constant_pressure` |
 | `idt.solver.end_time_s` | number | `0.2` | Simulated time of each trajectory |
 | `idt.solver.reference_species` | string | `OH` | Species whose mole-fraction peak marks ignition |
-| `idt.solver.ignition_criterion` | string | `reference_peak` | Peak of the reference species or `max_dTdt` |
+| `idt.solver.ignition_criterion` | string | `reference_peak` | Peak of the reference species within the ignition event, or `max_dTdt` |
 | `idt.precomputed.*` | strings | none | Files `time`, `T`, `P`, `Y` and `index` |
 | `fs.enabled` | boolean | `false` | Run the fs mode |
 | `fs.source` | string | `solver` | `solver` or `precomputed` |
@@ -131,13 +131,14 @@ Table 1. Main configuration keys
 | `report.T_points` | integer | `12` | Temperatures per pressure and equivalence ratio in the report |
 | `report.plots` | boolean | `true` | Write the PNG figures (needs Matplotlib) |
 
-The `example` folder has three complete configurations:
+The `example` folder holds the mechanism, the ethylene data and these configurations; the methane cases are in `example/methane`:
 
 - `config_c2h4_precomputed.json`: the ethylene trajectories of the folder, idt mode, precomputed route.
-- `config_ch4_solver.json`: methane with USC Mech II, both modes, solver route, original method, with a `reduction` block (tolerance 5 percent) and a `report` block.
-- `config_ch4_corrected.json`: the same case with the corrected rate law and the step-size guard.
+- `methane/config_ch4_solver.json`: methane with USC Mech II, both modes, solver route, original method, with a `reduction` block (tolerance 5 percent) and a `report` block.
+- `methane/config_ch4_corrected.json`: the same case with the corrected rate law and the step-size guard.
+- `methane/config_ch4_idt.json`: the IDT-oriented reduction of methane with the settings of the manuscript: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, constant-volume reactor, OH peak, tolerance 5 percent.
 
-The folder `example/sweeps` holds four configurations for the comparison of the method versions on methane. The file names give the rate law and the normalization: `ch4_<original|corrected>_<SAB|Srow>.json`. Each file has a `reduction` block for `gasig reduce`. The results are in `docs/notes/2026-10-reduction-sweep-ch4.md`.
+The folder `example/methane/sweeps` holds four configurations for the comparison of the method versions on methane. The file names give the rate law and the normalization: `ch4_<original|corrected>_<SAB|Srow>.json`. Each file has a `reduction` block for `gasig reduce`. On methane the corrected rate law keeps 25 species within 5 percent IDT error. The original law keeps 26 or 27 species. Every curve breaks at the removal of C2H4.
 
 `example/r_AB.npy` and `example/ranked_sp.npy` are the results of the version 0.1 script for the ethylene trajectories. They correspond to `rate_law: "original"`, `substep_tol: null`, `abs_S: false` and `normalization: "S_row_sum"`. `config_c2h4_precomputed.json` uses the manuscript switches and gives a different rank.
 
@@ -191,7 +192,7 @@ To compare the selected mechanism with the detailed one:
 gasig report config.json
 ```
 
-The command writes the folder `report/` with `report.md` and `report.json`. The figures show the error curve, the ignition delay time against 1000/T for both mechanisms, and the flame speed when the sweep evaluated flames.
+The command writes the folder `report/` with `report.md` and `report.json`. The figures show the error curve, the ignition delay time against 1000/T for both mechanisms, and the flame speed when the sweep evaluated flames. A grid point where the Cantera solver fails gets no value and a warning in `report.log`; the report completes.
 
 **NOTE:** The ignition delay time is the time of a solver sample. The solver steps change with the mechanism, so the ignition sample moves by up to one step. The step at ignition sets the noise of the error, which reaches 0.3 percent in the methane example at 1600 K and 1 atm.
 
@@ -221,7 +222,7 @@ Table 2. Files in the output folder
 
 A ranking-only run keeps the sensitivity record in `summary.json` and adds its own ranking block. `config_resolved.json` is a valid configuration file.
 
-`gasig reduce` writes a new `reduce.log`, `reduction_sweep.csv` and `reduction_sweep.json` at each sweep. A case with no ignition gives `inf` in the CSV and `null` in the JSON; `n_unignited` counts these cases. `max_fs_error` is `null` without `reduction.evaluate_fs`. A row with `complete: false` stopped at the first failed condition (early exit); its error is a lower bound, and `smallest_mechanism_within` counts complete rows only.
+`gasig reduce` writes a new `reduce.log`, `reduction_sweep.csv` and `reduction_sweep.json` at each sweep. A case with no ignition gives `inf` in the CSV and `null` in the JSON; `n_unignited` counts these cases. A condition where the Cantera integrator fails on a reduced mechanism also gives `inf`; `n_solver_failures` counts these cases, and the sweep continues. The detailed mechanism must integrate at every condition. The JSON file is written after every size with `status: running`, and completed with the selection at the end. `max_fs_error` is `null` without `reduction.evaluate_fs`. A row with `complete: false` stopped at the first failed condition (early exit); its error is a lower bound, and `smallest_mechanism_within` counts complete rows only.
 
 ## Precomputed data format
 
@@ -303,4 +304,4 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 
 Y.-J. Wu and K. C. Lin, GPU-Aided Sensitivity-in-graph (GA-SiG): An efficient sensitivity-based reduction method and its application to sustainable aviation fuel (submitted).
 
-The user guide is `docs/user_guide.md`. Design details are in `docs/design.md`. The plan is in `docs/roadmap.md`. The license is MIT; refer to `LICENSE`.
+The user guide is `docs/user_guide.md`. The license is MIT; refer to `LICENSE`.

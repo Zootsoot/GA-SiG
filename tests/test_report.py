@@ -52,6 +52,29 @@ def test_report_compares_the_selected_mechanism(swept):
         assert not (report_dir / "flame_speed_comparison.png").exists()
 
 
+def test_report_survives_a_solver_failure_on_a_grid_point(swept, monkeypatch, caplog):
+    import logging
+
+    import gasig.report as module
+
+    real_run_idt = module.run_idt
+
+    def flaky(mech_file, phase_name, T0, P0, phi, solver_cfg, label="", gas=None):
+        if label.startswith("n61-T1350"):
+            raise ct.CanteraError("CVodes error encountered. Error code: -4")
+        return real_run_idt(mech_file, phase_name, T0, P0, phi, solver_cfg, label=label, gas=gas)
+
+    monkeypatch.setattr(module, "run_idt", flaky)
+    cfg, out, data = swept
+    with caplog.at_level(logging.WARNING, logger="gasig.report"):
+        result = build_report(cfg, out, data)
+    failed = [e for e in result["idt"] if round(e["T_K"]) == 1350]
+    assert failed and failed[0]["idt_reduced_s"] is None and failed[0]["error"] is None
+    assert failed[0]["idt_detailed_s"] is not None
+    assert "the integrator failed" in caplog.text
+    assert (out / "report" / "report.md").is_file()
+
+
 def test_report_without_a_mechanism_within_tolerance(swept, tmp_path, mech_path):
     cfg, out, data = swept
     tight = make_config(tmp_path, mech_path, reduction={"step": 50, "min_species": 11, "error_tolerance": 1e-9},

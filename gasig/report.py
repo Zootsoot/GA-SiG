@@ -32,7 +32,7 @@ import numpy as np
 from . import __version__
 from .config import ConfigError, load_config
 from .logs import log_failure, setup_logging, teardown_logging
-from .reduce import evaluation_config, keep_list, reduced_solution, write_reduced_mechanism
+from .reduce import _failure_text, evaluation_config, keep_list, reduced_solution, write_reduced_mechanism
 from .search import select_optima
 from .solvers.flame import run_flame
 from .solvers.idt import run_idt
@@ -41,8 +41,25 @@ log = logging.getLogger("gasig.report")
 
 
 def _idt(gas: ct.Solution, T: float, P: float, phi: float, idt_cfg: dict, label: str) -> float:
-    traj = run_idt("", None, T, P, phi, idt_cfg, label=label, gas=gas)
+    """Ignition delay time at one grid point; no ignition or a Cantera failure gives inf (logged)."""
+    try:
+        traj = run_idt("", None, T, P, phi, idt_cfg, label=label, gas=gas)
+    except ct.CanteraError as exc:
+        log.warning("%s: T=%.0f K, P=%.2f atm, phi=%.2f: the integrator failed (%s); the point has no value.",
+                    label, T, P / ct.one_atm, phi, _failure_text(exc))
+        return float("inf")
     return float(traj.meta["tau_ign_s"]) if traj.meta["ignited"] else float("inf")
+
+
+def _flame_speed(gas: ct.Solution, P: float, phi: float, fs_cfg: dict, label: str) -> float:
+    """Flame speed at one condition; a Cantera failure gives inf (logged)."""
+    try:
+        traj = run_flame("", None, P, phi, fs_cfg, label=label, gas=gas)
+    except ct.CanteraError as exc:
+        log.warning("%s: P=%.2f atm, phi=%.2f: the flame solver failed (%s); the point has no value.",
+                    label, P / ct.one_atm, phi, _failure_text(exc))
+        return float("inf")
+    return float(traj.meta["flame_speed_m_s"])
 
 
 def _error(value: float, reference: float) -> float:
@@ -121,7 +138,7 @@ def build_report(cfg: dict, out_dir: Path, data: dict) -> dict:
     gas_red = None
     if selected is not None:
         keep = keep_list(names, removal_order, selected)
-        mech_file = data.get("selection", {}).get("mechanism_file")
+        mech_file = stored.get("mechanism_file") if stored.get("selected") == selected else None
         if not (mech_file and Path(mech_file).is_file()) and rcfg["write_mechanism"]:
             mech_file = str(write_reduced_mechanism(gas_full, keep, out_dir / f"reduced_{selected}sp.yaml"))
         result["mechanism_file"] = mech_file if mech_file and Path(mech_file).is_file() else None
@@ -145,10 +162,12 @@ def build_report(cfg: dict, out_dir: Path, data: dict) -> dict:
         if data.get("fs_conditions"):
             if evaluate_fs:
                 for P, phi in fs_conds:
-                    sl_full = float(run_flame("", None, P, phi, fs_cfg, label="full", gas=gas_full).meta["flame_speed_m_s"])
-                    sl_red = float(run_flame("", None, P, phi, fs_cfg, label=f"n{selected}", gas=gas_red).meta["flame_speed_m_s"])
-                    result["flame_speed"].append({"P_atm": P / ct.one_atm, "phi": phi, "detailed_m_s": sl_full,
-                                                  "reduced_m_s": sl_red, "error": _error(sl_red, sl_full)})
+                    sl_full = _flame_speed(gas_full, P, phi, fs_cfg, "full")
+                    sl_red = _flame_speed(gas_red, P, phi, fs_cfg, f"n{selected}")
+                    result["flame_speed"].append({"P_atm": P / ct.one_atm, "phi": phi,
+                                                  "detailed_m_s": _finite_or_none(sl_full),
+                                                  "reduced_m_s": _finite_or_none(sl_red),
+                                                  "error": _finite_or_none(_error(sl_red, sl_full))})
             else:
                 log.info("the sweep evaluated flames, but reduction.evaluate_fs is false now; no flame comparison.")
     else:

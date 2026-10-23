@@ -53,19 +53,23 @@ def _cmd_template(args: argparse.Namespace) -> int:
 def _cmd_info(args: argparse.Namespace) -> int:
     import numpy
     import cantera
-    import torch
 
     print(f"gasig   {__version__}")
     print(f"python  {platform.python_version()} ({platform.system()} {platform.machine()})")
     print(f"numpy   {numpy.__version__}")
     print(f"cantera {cantera.__version__}")
-    print(f"torch   {torch.__version__} (CUDA build: {torch.version.cuda})")
     try:
         import matplotlib
 
         print(f"matplotlib {matplotlib.__version__} (figures of 'gasig report')")
     except ImportError:
         print("matplotlib not installed; 'gasig report' writes tables only")
+    try:
+        import torch
+    except ImportError:
+        print("torch   not installed; 'run' and 'rank' need it, 'reduce' and 'report' do not")
+        return 0
+    print(f"torch   {torch.__version__} (CUDA build: {torch.version.cuda})")
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
             props = torch.cuda.get_device_properties(i)

@@ -1,0 +1,52 @@
+{
+  "mechanism": "../USCMechII.yaml",
+  "device": "auto",
+  "output_dir": "results_ch4_idt",
+  "sensitivity": {
+    "rate_law": "original",
+    "substep_tol": null,
+    "progress_every": 0
+  },
+  "aggregation": {
+    "abs_S": true,
+    "normalization": "S_AB_row_sum"
+  },
+  "idt": {
+    "enabled": true,
+    "source": "solver",
+    "solver": {
+      "fuel": {"CH4": 1.0},
+      "oxidizer": {"O2": 0.21, "N2": 0.79},
+      "T_K": [1000.0, 1050.0, 1100.0, 1150.0, 1200.0, 1250.0, 1300.0, 1350.0, 1400.0, 1450.0, 1500.0, 1550.0, 1600.0],
+      "P_atm": [1.0, 5.0, 30.0],
+      "phi": [0.5, 1.0, 2.0],
+      "reactor": "constant_volume",
+      "end_time_s": 2.0,
+      "reference_species": "OH",
+      "ignition_criterion": "reference_peak",
+      "rtol": 1e-6,
+      "atol": 1e-12
+    }
+  },
+  "fs": {
+    "enabled": false
+  },
+  "ranking": {
+    "target_species": ["CH4", "O2", "OH", "H2O", "HO2", "CO2"],
+    "combine": "idt"
+  },
+  "reduction": {
+    "step": 1,
+    "min_species": 15,
+    "error_tolerance": 0.05,
+    "write_mechanism": true,
+    "search": {
+      "mode": "full",
+      "early_exit": false
+    }
+  },
+  "report": {
+    "T_points": 13,
+    "plots": true
+  }
+}

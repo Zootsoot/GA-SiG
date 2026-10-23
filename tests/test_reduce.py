@@ -291,7 +291,7 @@ def test_fs_mixture_is_protected(tmp_path, mech_path, out, monkeypatch):
 
     calls = []
 
-    def fake_fs(gas, conditions, fs_cfg, label):
+    def fake_fs(gas, conditions, fs_cfg, label, on_failure="inf"):
         calls.append((label, len(conditions)))
         return [0.4] * len(conditions)
 
@@ -310,6 +310,59 @@ def test_unignited_reference_is_rejected(tmp_path, mech_path, out):
     cfg = make_config(tmp_path, mech_path, reduction={"idt": {"end_time_s": 1e-7}})
     with pytest.raises(RuntimeError, match="do not ignite"):
         sweep(cfg, out)
+
+
+def test_solver_failure_counts_as_a_failed_condition(tmp_path, mech_path, out, monkeypatch):
+    """A Cantera failure on a reduced mechanism does not abort the sweep; the detailed mechanism must integrate."""
+    import gasig.reduce as module
+
+    real_run_idt = module.run_idt
+
+    def flaky(mech_file, phase_name, T0, P0, phi, solver_cfg, label="", gas=None):
+        if label.startswith("n61"):
+            raise ct.CanteraError("CVodes error encountered. Error code: -4")
+        return real_run_idt(mech_file, phase_name, T0, P0, phi, solver_cfg, label=label, gas=gas)
+
+    monkeypatch.setattr(module, "run_idt", flaky)
+    cfg = make_config(tmp_path, mech_path, reduction={"step": 50, "min_species": 11, "error_tolerance": 0.05})
+    summary = sweep(cfg, out)
+    rows = summary["rows"]
+    assert [r["n_species"] for r in rows] == [111, 61, 11]
+    assert rows[1]["n_solver_failures"] == 1 and rows[1]["max_idt_error"] == float("inf")
+    assert rows[1]["n_unignited"] == 0 and rows[1]["complete"] is True
+    assert rows[2]["n_solver_failures"] == 0 and rows[2]["n_unignited"] == 1
+    assert summary["status"] == "complete" and summary["selection"]["selected"] is None
+    with (out / "reduction_sweep.csv").open(encoding="utf-8", newline="") as fh:
+        csv_rows = list(csv.DictReader(fh))
+    assert csv_rows[1]["n_solver_failures"] == "1" and csv_rows[1]["max_idt_error"] == "inf"
+
+    def broken_reference(*args, **kwargs):
+        raise ct.CanteraError("boom")
+
+    monkeypatch.setattr(module, "run_idt", broken_reference)
+    with pytest.raises(ct.CanteraError):
+        sweep(cfg, out)
+
+
+def test_json_is_written_after_every_size(tmp_path, mech_path, out, monkeypatch):
+    """A crash late in the sweep leaves the rows so far in reduction_sweep.json with status running."""
+    import gasig.reduce as module
+
+    real_run_idt = module.run_idt
+
+    def dies_on_reduced(mech_file, phase_name, T0, P0, phi, solver_cfg, label="", gas=None):
+        if label.startswith("n"):
+            raise RuntimeError("the machine went away")
+        return real_run_idt(mech_file, phase_name, T0, P0, phi, solver_cfg, label=label, gas=gas)
+
+    monkeypatch.setattr(module, "run_idt", dies_on_reduced)
+    cfg = make_config(tmp_path, mech_path)
+    with pytest.raises(RuntimeError, match="went away"):
+        sweep(cfg, out)
+    data = json.loads((out / "reduction_sweep.json").read_text(encoding="utf-8"))
+    assert data["status"] == "running" and [r["n_species"] for r in data["rows"]] == [111]
+    assert data["species_order"] and data["removal_order"] and "selection" not in data
+    assert data["search"]["evaluations"] == 0
 
 
 # ----------------------------------------------------------------------------- run_reduce and CLI

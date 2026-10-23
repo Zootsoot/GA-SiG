@@ -31,8 +31,9 @@ around the package; change the package, not the wrappers.
   search there, not inside `sweep`.
 - `gasig/report.py` imports Matplotlib inside the plotting function only.
   Matplotlib stays an optional extra (`pip install ".[report]"`).
-- `docs/design.md` records the method and the decisions. Update it when a
-  decision changes.
+- `docs/design.md`, `docs/roadmap.md` and `docs/notes/` are internal documents.
+  Git ignores them; they stay on disk. Update the design note when a decision
+  changes. `docs/user_guide.md` is the only released document.
 
 ## Documentation style
 

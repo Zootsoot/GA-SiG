@@ -9,6 +9,14 @@ sensitivity integration:
   species (default OH) is largest;
 * ``max_dTdt``: the sample where dT/dt is largest.
 
+The reference species can drift after ignition: slow post-ignition chemistry,
+above all in a reduced mechanism, can lift its mole fraction above the
+ignition peak long after the event. ``reference_peak`` therefore applies a
+sequence of rules once the reactor ignited: a detected peak of the reference
+species inside the ignition event; else the temperature peak inside the
+event; else the mean of the times of the steepest rise of the reference
+species and of the temperature. See :func:`ignition_sample`.
+
 If the ignition sample is the first or the last sample, or the temperature
 rise is below 100 K, no ignition is detected. The trajectory is then reported
 with ``ignited = False`` and, with ``skip_unignited``, left out.
@@ -32,6 +40,64 @@ from ..trajectory import Trajectory
 log = logging.getLogger(__name__)
 
 MIN_TEMPERATURE_RISE_K = 100.0
+POST_IGNITION_FACTOR = 2.0      # a reference peak later than this factor times the heat-release time is drift
+
+
+def ignition_sample(t: np.ndarray, T: np.ndarray, ref: np.ndarray, criterion: str) -> tuple[int, float, str | None]:
+    """The ignition sample, the ignition time, and a note when a fallback rule was applied.
+
+    ``max_dTdt`` gives the sample with the largest dT/dt. ``reference_peak``
+    applies this sequence once the reactor ignited (temperature rise of at
+    least 100 K):
+
+    1. A detected peak of the reference species is the ignition: the global
+       maximum when it lies inside the ignition event, else the first local
+       maximum at or after the heat-release peak. A maximum at the last sample,
+       or later than ``POST_IGNITION_FACTOR`` times the time of the
+       heat-release peak, lies after the event (post-ignition drift).
+    2. When the reference species grows until the end, the temperature peak
+       inside the event is the ignition.
+    3. When the temperature also grows until the end, the ignition time is
+       the mean of the times of the steepest rise of the reference species
+       and of the temperature; the ignition sample is the nearest sample.
+
+    Without ignition, or when the reference species peaks at the first
+    sample, the global maximum is returned as before.
+    """
+    t = np.asarray(t, dtype=float)
+    T = np.asarray(T, dtype=float)
+    ref = np.asarray(ref, dtype=float)
+    N = int(t.shape[0])
+    dTdt = np.gradient(T, t, edge_order=1) if N > 2 else np.zeros_like(T)
+    i_heat = int(np.argmax(dTdt))
+    if criterion == "max_dTdt":
+        return i_heat, float(t[i_heat]), None
+    i_peak = int(np.argmax(ref))
+    T_rise = float(T.max() - T[0]) if N else 0.0
+    if i_peak == 0 or i_heat == 0 or N <= 2 or T_rise < MIN_TEMPERATURE_RISE_K:
+        return i_peak, float(t[i_peak]), None
+
+    def late(i: int) -> bool:
+        return i >= N - 1 or t[i] > POST_IGNITION_FACTOR * t[i_heat]
+
+    # Rule 1: a detected peak of the reference species.
+    if not late(i_peak):
+        return i_peak, float(t[i_peak]), None
+    for k in range(i_heat, N - 1):
+        if ref[k] >= ref[k + 1]:
+            return k, float(t[k]), (f"the reference species peaks at t={t[i_peak]:.3e} s, after the ignition event; "
+                                    f"the ignition sample is its first peak after the heat-release peak, t={t[k]:.3e} s")
+    # Rule 2: the reference species grows until the end; the temperature peak.
+    i_T = int(np.argmax(T))
+    if not late(i_T):
+        return i_T, float(t[i_T]), (f"the reference species rises until the end (t={t[i_peak]:.3e} s); "
+                                    f"the ignition sample is the temperature peak, t={t[i_T]:.3e} s")
+    # Rule 3: both grow until the end; the mean of the two steepest rises.
+    i_dref = int(np.argmax(np.gradient(ref, t, edge_order=1)))
+    tau = 0.5 * (float(t[i_dref]) + float(t[i_heat]))
+    i_ign = int(np.argmin(np.abs(t - tau)))
+    return i_ign, tau, (f"the reference species and the temperature rise until the end; the ignition time is the "
+                        f"mean of their steepest rises, t={t[i_dref]:.3e} s and t={t[i_heat]:.3e} s")
 
 
 def idt_conditions(solver_cfg: dict) -> list[tuple[float, float, float]]:
@@ -120,12 +186,10 @@ def run_idt(
 
     t_arr = np.asarray(t_hist)
     T_arr = np.asarray(T_hist)
-    if solver_cfg["ignition_criterion"] == "max_dTdt":
-        dTdt = np.gradient(T_arr, t_arr, edge_order=1) if t_arr.shape[0] > 2 else np.zeros_like(T_arr)
-        i_ign = int(np.argmax(dTdt))
-    else:
-        i_ign = int(np.argmax(np.asarray(ref_hist)))
     T_rise = float(T_arr.max() - T_arr[0])
+    i_ign, tau_ign, note = ignition_sample(t_arr, T_arr, np.asarray(ref_hist), solver_cfg["ignition_criterion"])
+    if note:
+        log.warning("%s: %s", label, note)
     if i_ign == 0 and T_rise >= MIN_TEMPERATURE_RISE_K and solver_cfg["ignition_criterion"] == "reference_peak":
         raise ValueError(
             f"{label}: the reactor ignited (temperature rise {T_rise:.0f} K) but the reference species "
@@ -135,8 +199,8 @@ def run_idt(
     # An ignition sample at t = 0 (possible with max_dTdt for a mixture that reacts at once)
     # gives no ignition delay; it is reported as no ignition.
     ignited = (0 < i_ign < t_arr.shape[0] - 1) and (T_rise >= MIN_TEMPERATURE_RISE_K)
-    tau_ign = float(t_arr[i_ign])
     if not ignited:
+        tau_ign = float(t_arr[i_ign])
         log.warning("%s: no ignition detected (ignition sample %d of %d, temperature rise %.1f K).",
                     label, i_ign, t_arr.shape[0], T_rise)
     else:

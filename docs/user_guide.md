@@ -4,7 +4,7 @@ Date: 2026-10-23. Version: gasig 0.2.0. Status: current.
 
 ## Purpose
 
-This guide shows how to reduce a detailed kinetic mechanism with GA-SiG, from the installation to the report. The example is methane with USC Mech II; the files are in the `example` folder of the repository. The README gives the overview and the full table of keys; `docs/design.md` gives the method.
+This guide shows how to reduce a detailed kinetic mechanism with GA-SiG, from the installation to the report. The example is methane with USC Mech II; the files are in the `example` folder of the repository. The README gives the overview and the full table of keys. The manuscript, cited in the README, gives the method.
 
 ## Workflow
 
@@ -107,7 +107,7 @@ Table 1. Keys to set for a reduction
 | reduce | `reduction.idt`, `reduction.fs` | Evaluation conditions that differ from the solver conditions |
 | report | `report.T_points` | Temperatures per pressure and equivalence ratio in the comparison |
 
-The example configuration `example/config_ch4_solver.json` has every key of a complete methane reduction.
+The example configuration `example/methane/config_ch4_solver.json` has every key of a complete methane reduction.
 
 ### Route A: the package runs the solvers
 
@@ -164,6 +164,25 @@ docker run --rm -v "${PWD}:/workspace" ga-sig:cpu report config.json
 
 The command reads the sweep result and selects the mechanism. It computes the ignition delay time of the detailed and the selected mechanism on `report.T_points` temperatures per pressure and equivalence ratio. It writes the folder `report/`.
 
+### Validate a rank without Docker
+
+The reduction and report steps need Cantera, NumPy and Matplotlib only. When a rank exists (`ranked_species.csv` in the output folder, from a `gasig run` in the container or on another machine), you can run both steps in a Cantera environment on your own machine:
+
+1. Install the package into that environment without its dependencies, so that pip does not pull PyTorch:
+
+   ```bash
+   pip install --no-deps -e .
+   ```
+
+2. Run the two steps from the folder of the configuration file:
+
+   ```bash
+   gasig reduce config.json
+   gasig report config.json
+   ```
+
+`gasig info` shows `torch not installed` in such an environment; that is expected. To run the test suite there, install pytest (`pip install pytest`); the tests of the sensitivity integration skip without torch, the tests of the reduction, the search, the report and the configuration run.
+
 ### Expected run times
 
 Table 2. Run times of the methane example on one CPU core in the container
@@ -186,8 +205,8 @@ Table 3. Files of a complete reduction
 |---|---|
 | `ranked_species.csv` | The rank, from the least to the most important species, with the importance |
 | `summary.json`, `gasig.log` | The run summary and its log |
-| `reduction_sweep.csv` | One row per evaluated size: species, reactions, maximum and mean IDT error, unignited cases, flame-speed error, `complete`, the species removed since the size above, seconds |
-| `reduction_sweep.json` | The same rows with every ignition delay time, the removal order, the search record and the selection |
+| `reduction_sweep.csv` | One row per evaluated size: species, reactions, maximum and mean IDT error, unignited cases, solver failures, flame-speed error, `complete`, the species removed since the size above, seconds |
+| `reduction_sweep.json` | The same rows with every ignition delay time, the removal order, the search record and the selection; written after every size, `status` is `running` until the end |
 | `reduced_<n>sp.yaml` | The selected mechanism |
 | `reduce.log` | The log of the sweep; it holds the traceback of a failure |
 | `report/report.md`, `report/report.json` | The report and its numbers |
@@ -234,9 +253,9 @@ The README, section Problems and causes, lists the error messages and the action
 
 ## Example: methane with USC Mech II
 
-The configuration `example/config_ch4_solver.json` reduces methane with the original method and a tolerance of 5 percent. The evaluation uses 12 ignition conditions (1200 to 1600 K, 1 and 10 atm, phi 0.5 and 1) and three flames.
+The configuration `example/methane/config_ch4_solver.json` reduces methane with the original method and a tolerance of 5 percent. The evaluation uses 12 ignition conditions (1200 to 1600 K, 1 and 10 atm, phi 0.5 and 1) and three flames.
 
-1. Open a shell in the `example` folder of the repository.
+1. Open a shell in the `example/methane` folder of the repository.
 2. Run the sensitivity integration and the rank (approximately 12 min on the CPU):
 
    ```bash
@@ -259,4 +278,18 @@ The configuration `example/config_ch4_solver.json` reduces methane with the orig
 
 To try the adaptive search on the same rank, set `reduction.search.mode` to `adaptive` in a copy of the configuration. Then run steps 3 and 4 again. The sweep then evaluates approximately 30 sizes instead of 96.
 
-The four configurations in `example/sweeps/` repeat the sweep with the corrected rate law and the second normalization. The note `docs/notes/2026-10-reduction-sweep-ch4.md` holds their results.
+The four configurations in `example/methane/sweeps/` repeat the sweep with the corrected rate law and the second normalization. The corrected rate law keeps 25 species within 5 percent IDT error. The original law keeps 26 or 27 species. Every curve breaks at the removal of C2H4.
+
+## Example: the IDT-oriented reduction of the manuscript
+
+`example/methane/config_ch4_idt.json` applies the settings of the manuscript's case study to methane: ignition delay times only (`fs.enabled` false, `ranking.combine` `idt`), the original rate law, `abs_S` true and `S_AB_row_sum`. The conditions follow the paper's data collector: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, a constant-volume reactor, rtol 1e-6, atol 1e-12 and the OH peak as the ignition sample. That is 117 trajectories. The targets are the fuel, O2, OH, H2O, HO2 and CO2, as in the ethylene example. The sweep runs every size down to 15 species with every condition evaluated, which gives the complete error curve of Fig. 5 of the paper; the tolerance is 5 percent.
+
+Table 4. Run times of the manuscript case on one CPU core
+
+| Command | Work | Time |
+|---|---|---|
+| `run` | 117 ignition cases and their sensitivity integration | 2.5 min (measured) |
+| `reduce`, full, every condition | 96 sizes, 117 conditions each | estimate: 20 to 30 min |
+| `report` | 13 temperatures, 9 pressure and equivalence-ratio pairs | estimate: approximately 2 min |
+
+To shorten the sweep, set `reduction.search.mode` to `adaptive` (the early exit is then on); the search needs approximately 25 sizes, and failed sizes stop at the first failed condition. To shorten the run, keep every second temperature.

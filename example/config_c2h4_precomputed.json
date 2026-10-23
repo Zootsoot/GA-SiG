@@ -23,5 +23,29 @@
   },
   "ranking": {
     "target_species": ["C2H4", "O2", "OH", "H2O", "HO2", "CO2"]
+  },
+  "reduction": {
+    "step": 1,
+    "min_species": 15,
+    "error_tolerance": 0.05,
+    "write_mechanism": true,
+    "search": {
+      "mode": "full",
+      "early_exit": false
+    },
+    "idt": {
+      "fuel": {"C2H4": 1.0},
+      "oxidizer": {"O2": 0.21, "N2": 0.79},
+      "T_K": [1000.0, 1060.0, 1120.0, 1180.0, 1240.0, 1300.0, 1360.0, 1420.0, 1480.0, 1540.0, 1600.0],
+      "P_atm": [1.0, 5.0, 30.0],
+      "phi": [0.5, 1.0, 2.0],
+      "reactor": "constant_volume",
+      "end_time_s": 0.2,
+      "reference_species": "OH"
+    }
+  },
+  "report": {
+    "T_points": 11,
+    "plots": true
   }
 }

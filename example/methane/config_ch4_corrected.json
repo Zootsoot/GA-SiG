@@ -1,5 +1,5 @@
 {
-  "mechanism": "USCMechII.yaml",
+  "mechanism": "../USCMechII.yaml",
   "device": "auto",
   "output_dir": "results_ch4_corrected",
   "sensitivity": {

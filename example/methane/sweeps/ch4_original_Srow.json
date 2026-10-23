@@ -1,8 +1,8 @@
 {
-  "mechanism": "../USCMechII.yaml",
+  "mechanism": "../../USCMechII.yaml",
   "device": "auto",
-  "output_dir": "results_ch4_corrected_Srow",
-  "sensitivity": {"rate_law": "corrected", "substep_tol": 0.01, "max_substeps": 64, "progress_every": 0},
+  "output_dir": "results_ch4_original_Srow",
+  "sensitivity": {"rate_law": "original", "substep_tol": null, "progress_every": 0},
   "aggregation": {"abs_S": true, "normalization": "S_row_sum"},
   "idt": {
     "enabled": true,
