@@ -13,7 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Versions match the tested environment in README.md.
-RUN pip install "numpy==1.26.4" "cantera==3.2.0" "pytest>=7"
+RUN pip install "numpy==1.26.4" "cantera==3.2.0" "matplotlib>=3.7" "pytest>=7"
 
 FROM deps AS app
 

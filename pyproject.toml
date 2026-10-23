@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+report = ["matplotlib>=3.7"]
 
 [project.scripts]
 gasig = "gasig.cli:main"

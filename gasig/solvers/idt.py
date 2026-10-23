@@ -9,9 +9,14 @@ sensitivity integration:
   species (default OH) is largest;
 * ``max_dTdt``: the sample where dT/dt is largest.
 
-If the ignition sample is the last sample, or the temperature rise is below
-100 K, no ignition is detected. The trajectory is then reported with
-``ignited = False`` and, with ``skip_unignited``, left out.
+If the ignition sample is the first or the last sample, or the temperature
+rise is below 100 K, no ignition is detected. The trajectory is then reported
+with ``ignited = False`` and, with ``skip_unignited``, left out.
+
+Every reactor works on a clone of the Solution. The composition is set
+before the temperature and the pressure, so the initial state does not
+depend on the state the Solution held before; the same condition then gives
+the same solver grid in ``gasig run`` and in ``gasig reduce``.
 """
 from __future__ import annotations
 
@@ -22,7 +27,7 @@ import time
 import cantera as ct
 import numpy as np
 
-from ..sensitivity import Trajectory
+from ..trajectory import Trajectory
 
 log = logging.getLogger(__name__)
 
@@ -37,10 +42,10 @@ def idt_conditions(solver_cfg: dict) -> list[tuple[float, float, float]]:
     ]
 
 
-def _make_reactor(gas: ct.Solution, kind: str):
+def _make_reactor(gas: ct.Solution, kind: str, clone: bool = False):
     cls = ct.IdealGasMoleReactor if kind == "constant_volume" else ct.IdealGasConstPressureMoleReactor
     try:
-        reactor = cls(gas, clone=False)
+        reactor = cls(gas, clone=clone)
     except TypeError:
         reactor = cls(gas)
     return reactor
@@ -59,12 +64,21 @@ def run_idt(
     phi: float,
     solver_cfg: dict,
     label: str = "",
+    gas: ct.Solution | None = None,
 ) -> Trajectory:
-    """Integrate one reactor and return its trajectory with the ignition sample as ``end_index``."""
-    gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
-    gas.TP = T0, P0
+    """Integrate one reactor and return its trajectory with the ignition sample as ``end_index``.
+
+    The reactor works on a clone of the Solution, so a shared ``gas`` (for
+    example a reduced mechanism built in memory) is left at its initial
+    state. With ``gas`` given, ``mech_file`` is not read.
+    """
+    if gas is None:
+        gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
+    # Composition first, state last: the initial density is then bit-reproducible
+    # whatever state the Solution held before this call.
     gas.set_equivalence_ratio(phi, solver_cfg["fuel"], solver_cfg["oxidizer"])
-    reactor = _make_reactor(gas, solver_cfg["reactor"])
+    gas.TP = T0, P0
+    reactor = _make_reactor(gas, solver_cfg["reactor"], clone=True)
     phase = _phase_of(reactor)
     net = ct.ReactorNet([reactor])
     try:
@@ -118,7 +132,9 @@ def run_idt(
             f"'{ref}' peaks at the first sample; it is a reactant or a diluent. Choose a radical such as OH "
             "as reference_species, or set ignition_criterion to 'max_dTdt'."
         )
-    ignited = (i_ign < t_arr.shape[0] - 1) and (T_rise >= MIN_TEMPERATURE_RISE_K)
+    # An ignition sample at t = 0 (possible with max_dTdt for a mixture that reacts at once)
+    # gives no ignition delay; it is reported as no ignition.
+    ignited = (0 < i_ign < t_arr.shape[0] - 1) and (T_rise >= MIN_TEMPERATURE_RISE_K)
     tau_ign = float(t_arr[i_ign])
     if not ignited:
         log.warning("%s: no ignition detected (ignition sample %d of %d, temperature rise %.1f K).",
@@ -139,9 +155,10 @@ def run_idt_set(mech_file: str, phase_name: str | None, solver_cfg: dict) -> lis
     conditions = idt_conditions(solver_cfg)
     log.info("idt solver: %d conditions (%s reactor, end time %.3e s).",
              len(conditions), solver_cfg["reactor"], solver_cfg["end_time_s"])
+    gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
     trajs = []
     for m, (T0, P0, phi) in enumerate(conditions):
-        traj = run_idt(mech_file, phase_name, T0, P0, phi, solver_cfg, label=f"idt-{m}")
+        traj = run_idt(mech_file, phase_name, T0, P0, phi, solver_cfg, label=f"idt-{m}", gas=gas)
         if not traj.meta["ignited"] and solver_cfg["skip_unignited"]:
             log.warning("%s is skipped (skip_unignited is true).", traj.label)
             continue

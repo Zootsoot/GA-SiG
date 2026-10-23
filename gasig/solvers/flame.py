@@ -16,7 +16,7 @@ import time
 import cantera as ct
 import numpy as np
 
-from ..sensitivity import Trajectory, flame_tip_index, residence_time
+from ..trajectory import Trajectory, flame_tip_index, residence_time
 
 log = logging.getLogger(__name__)
 
@@ -34,12 +34,20 @@ def run_flame(
     phi: float,
     solver_cfg: dict,
     label: str = "",
+    gas: ct.Solution | None = None,
 ) -> Trajectory:
-    """Solve one flame and return its profile in residence time."""
-    gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
+    """Solve one flame and return its profile in residence time.
+
+    With ``gas`` given (for example a reduced mechanism built in memory with
+    transport data), the flame uses that Solution and ``mech_file`` is not
+    read. The flame object sets the state of the Solution.
+    """
+    if gas is None:
+        gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
     T_u = float(solver_cfg["T_unburnt_K"])
-    gas.TP = T_u, P
+    # Composition first, state last: the inlet state is then independent of the prior state.
     gas.set_equivalence_ratio(phi, solver_cfg["fuel"], solver_cfg["oxidizer"])
+    gas.TP = T_u, P
 
     flame = ct.FreeFlame(gas, width=float(solver_cfg["domain_width_m"]))
     flame.transport_model = solver_cfg["transport_model"]
@@ -72,7 +80,8 @@ def run_flame_set(mech_file: str, phase_name: str | None, solver_cfg: dict) -> l
     conditions = flame_conditions(solver_cfg)
     log.info("fs solver: %d flames (T_u=%.0f K, width %.3f m, %s transport).",
              len(conditions), solver_cfg["T_unburnt_K"], solver_cfg["domain_width_m"], solver_cfg["transport_model"])
+    gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
     trajs = []
     for m, (P, phi) in enumerate(conditions):
-        trajs.append(run_flame(mech_file, phase_name, P, phi, solver_cfg, label=f"fs-{m}"))
+        trajs.append(run_flame(mech_file, phase_name, P, phi, solver_cfg, label=f"fs-{m}", gas=gas))
     return trajs

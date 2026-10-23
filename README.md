@@ -13,6 +13,8 @@ The package has two modes:
 
 One JSON file configures a run. For each mode, the package can run its own Cantera solver from the fuel, the oxidizer, the conditions and the mechanism. As an alternative, you can supply precomputed trajectories in the format of the `example` folder.
 
+A reduction has three commands. `gasig run` makes the rank. `gasig reduce` measures the error of each reduced mechanism and selects the smallest one within your error tolerance. `gasig report` compares the selected mechanism with the detailed one in tables and figures. The user guide `docs/user_guide.md` walks through a complete reduction on the methane example.
+
 ## Tested environment
 
 | Item | Version |
@@ -21,9 +23,10 @@ One JSON file configures a run. For each mode, the package can run its own Cante
 | NumPy | 1.26.4 |
 | Cantera | 3.2.0 |
 | PyTorch | 2.8.0, CUDA 12.6 build |
+| Matplotlib | 3.7 or later, optional: the figures of `gasig report` |
 | GPU | optional: an NVIDIA GPU with a current driver |
 
-The Docker image contains all of these. The package accepts Python 3.10 to 3.12, NumPy 1.24 or later, Cantera 3.1 or 3.2 and PyTorch 2.1 or later. Without a GPU the package runs on the CPU.
+The Docker image contains all of these. The package accepts Python 3.10 to 3.12, NumPy 1.24 or later, Cantera 3.1 or 3.2 and PyTorch 2.1 or later. Without a GPU the package runs on the CPU. The commands `reduce`, `report` and `template` need Cantera and NumPy only; they run without PyTorch.
 
 ## Install
 
@@ -54,10 +57,10 @@ Use `ga-sig:cpu` in place of `ga-sig` in every command that follows, without `--
 
 1. Make a Python 3.10, 3.11 or 3.12 environment (3.11 is the tested version).
 2. Install PyTorch for your CUDA version. Refer to pytorch.org for the command.
-3. Install the package in the repository folder:
+3. Install the package in the repository folder, with the report extra for the figures:
 
    ```bash
-   pip install .
+   pip install ".[report]"
    ```
 
 4. Do a check:
@@ -112,12 +115,29 @@ Table 1. Main configuration keys
 | `ranking.combine` | string | `auto` | `auto`, `idt`, `fs` or `hybrid` |
 | `ranking.hybrid_weight_idt` | number | `0.5` | Weight of the idt matrix in the hybrid matrix |
 | `ranking.eps_edge` | number | `1e-16` | Entries of `r_AB` at or below this value are not graph edges |
+| `reduction.ranking_file` | string | `ranked_species.csv` | Rank file in `output_dir`, from the rank stage |
+| `reduction.step` | integer | `1` | Species removed per sweep step |
+| `reduction.min_species` | integer | `20` | Smallest mechanism size of the sweep; the last step is shorter when necessary |
+| `reduction.stop_error` | number or null | `null` | The sweep stops after the maximum IDT error exceeds this fraction |
+| `reduction.keep_species` | list | `[]` | Species that the sweep keeps, besides the targets; each name must be in the mechanism |
+| `reduction.evaluate_fs` | boolean | `false` | Also evaluate the flame speed error |
+| `reduction.error_tolerance` | number or null | `null` | Relative IDT error limit for the selection of the reduced mechanism |
+| `reduction.write_mechanism` | boolean | `true` | Write the selected mechanism as `reduced_<n>sp.yaml` |
+| `reduction.search.mode` | string | `full` | `full` evaluates every size in steps; `adaptive` searches the size within the tolerance |
+| `reduction.search.early_exit` | boolean or null | `null` | Stop a size at the first condition above the tolerance; `null` is true in adaptive mode only |
+| `reduction.search.robust_window` | integer | `3` | Sizes above the optimum that must also pass for the robust optimum |
+| `reduction.search.max_evaluations` | integer or null | `null` | Adaptive: upper limit of reduced mechanisms evaluated |
+| `reduction.idt.*`, `reduction.fs.*` | various | `null` | Overrides of the solver conditions for the evaluation |
+| `report.T_points` | integer | `12` | Temperatures per pressure and equivalence ratio in the report |
+| `report.plots` | boolean | `true` | Write the PNG figures (needs Matplotlib) |
 
 The `example` folder has three complete configurations:
 
 - `config_c2h4_precomputed.json`: the ethylene trajectories of the folder, idt mode, precomputed route.
-- `config_ch4_solver.json`: methane with USC Mech II, both modes, solver route, original method.
+- `config_ch4_solver.json`: methane with USC Mech II, both modes, solver route, original method, with a `reduction` block (tolerance 5 percent) and a `report` block.
 - `config_ch4_corrected.json`: the same case with the corrected rate law and the step-size guard.
+
+The folder `example/sweeps` holds four configurations for the comparison of the method versions on methane. The file names give the rate law and the normalization: `ch4_<original|corrected>_<SAB|Srow>.json`. Each file has a `reduction` block for `gasig reduce`. The results are in `docs/notes/2026-10-reduction-sweep-ch4.md`.
 
 `example/r_AB.npy` and `example/ranked_sp.npy` are the results of the version 0.1 script for the ethylene trajectories. They correspond to `rate_law: "original"`, `substep_tol: null`, `abs_S: false` and `normalization: "S_row_sum"`. `config_c2h4_precomputed.json` uses the manuscript switches and gives a different rank.
 
@@ -155,6 +175,26 @@ To rank the same sensitivities again with other target species:
    gasig rank config.json
    ```
 
+To measure how the rank performs, remove species in rank order and get the error of each reduced mechanism:
+
+```bash
+gasig reduce config.json
+```
+
+The command reads the rank file of the run (`reduction.ranking_file`). It removes `reduction.step` species per step, down to `reduction.min_species`. It builds each reduced mechanism in memory and computes the ignition delay time at the `idt.solver` conditions, or at the `reduction.idt` overrides. It writes `reduction_sweep.csv` with the maximum relative error per size. The sweep keeps the target species, the fuel and oxidizer species, the reference species and `reduction.keep_species`. Set `reduction.evaluate_fs` to true to add the flame speed error; this is slow. The command needs Cantera and NumPy only.
+
+With `reduction.error_tolerance`, the command selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`. It reports two sizes. The strict optimum is the smallest evaluated size within the tolerance. The robust optimum is the smallest size whose next `robust_window` larger sizes also pass; the report uses it. Set `reduction.search.mode` to `adaptive` for a large mechanism. The search evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance and lists the intervals it did not refine.
+
+To compare the selected mechanism with the detailed one:
+
+```bash
+gasig report config.json
+```
+
+The command writes the folder `report/` with `report.md` and `report.json`. The figures show the error curve, the ignition delay time against 1000/T for both mechanisms, and the flame speed when the sweep evaluated flames.
+
+**NOTE:** The ignition delay time is the time of a solver sample. The solver steps change with the mechanism, so the ignition sample moves by up to one step. The step at ignition sets the noise of the error, which reaches 0.3 percent in the methane example at 1600 K and 1 atm.
+
 **NOTE:** On Windows PowerShell, write the volume as `-v "${PWD}:/workspace"` from inside the run folder.
 
 **NOTE:** The scripts `GA-SiG.py` and `graph_search_to_importance.py` at the root of the source checkout are wrappers around the package. `python GA-SiG.py config.json` runs the sensitivity stage only. `python graph_search_to_importance.py config.json` runs the rank. They are not in the wheel or in the image.
@@ -175,8 +215,13 @@ Table 2. Files in the output folder
 | `trajectories_idt.json`, `trajectories_fs.json` | Conditions, ignition delay times, flame speeds and integration counters | JSON |
 | `idt_data/`, `fs_data/` | Solver results in the precomputed format, for reuse | NumPy |
 | `summary.json`, `config_resolved.json`, `gasig.log` | Run summary, the configuration with all defaults, the log | JSON, text |
+| `reduction_sweep.csv`, `reduction_sweep.json`, `reduce.log` | Error of each reduced mechanism against its species count, the search record, the selection, and the log, from `gasig reduce` | CSV, JSON, text |
+| `reduced_<n>sp.yaml` | The selected reduced mechanism, with transport data when the detailed mechanism has it | Cantera YAML |
+| `report/` | `report.md`, `report.json`, `error_vs_species.png`, `idt_comparison.png`, `flame_speed_comparison.png`, from `gasig report` | Markdown, JSON, PNG |
 
 A ranking-only run keeps the sensitivity record in `summary.json` and adds its own ranking block. `config_resolved.json` is a valid configuration file.
+
+`gasig reduce` writes a new `reduce.log`, `reduction_sweep.csv` and `reduction_sweep.json` at each sweep. A case with no ignition gives `inf` in the CSV and `null` in the JSON; `n_unignited` counts these cases. `max_fs_error` is `null` without `reduction.evaluate_fs`. A row with `complete: false` stopped at the first failed condition (early exit); its error is a lower bound, and `smallest_mechanism_within` counts complete rows only.
 
 ## Precomputed data format
 
@@ -225,7 +270,7 @@ The tests use USC Mech II. The solver tests burn methane. The regression tests u
 docker run --rm -v "<repository folder>:/workspace" --entrypoint pytest ga-sig -q
 ```
 
-Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-to-end tests that run the Cantera solvers.
+Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-to-end tests that take minutes.
 
 ## Problems and causes
 
@@ -238,7 +283,12 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 | `no ignition detected` in the log | The reactor did not ignite before `end_time_s` | Increase `end_time_s`, or set `skip_unignited` to true |
 | `u must be positive everywhere` | The profile is not a freely propagating flame in the flame-fixed frame | Supply a `FreeFlame` or `BurnerFlame` profile |
 | `The temperature reaches ... at the first point already` | A flat or decreasing precomputed profile, or a low `flame_tip_T_fraction` | Supply the profile from the unburnt inlet, or raise the fraction |
-| `Error: ...` with exit code 3 | A run-time error in a solver or in the data | Read the message; set `GASIG_DEBUG=1` for the traceback |
+| `reduction.keep_species names species that are not in the mechanism` | A name in the keep list has a typo | Correct the name |
+| `The mechanism has species that are not in the rank file` | The rank comes from another mechanism | Run `gasig rank` with this mechanism, then `gasig reduce` |
+| `conditions do not ignite with the detailed mechanism` | `end_time_s` or `max_steps` is too small for the evaluation conditions | Raise them in `reduction.idt`, or change the conditions |
+| `no evaluated mechanism is within the tolerance` in the log | Every reduced size exceeds `reduction.error_tolerance` | Raise the tolerance, lower `reduction.min_species`, or rank with other targets |
+| `Matplotlib is not installed` in the log | The report extra is not installed | `pip install ".[report]"`; the tables are written in every case |
+| `Error: ...` with exit code 3 | A run-time error in a solver or in the data | Read the message; set `GASIG_DEBUG=1` for the traceback; `reduce.log` and `report.log` hold the traceback |
 | Out of GPU memory | The mechanism is too large for the GPU | Use a larger GPU or `device: "cpu"` |
 
 ## Limits
@@ -246,10 +296,11 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 - The Jacobian holds the falloff, pressure-dependent and Chebyshev rate constants fixed. It does not differentiate their composition dependence.
 - The flame solver uses the Cantera `FreeFlame` object with mixture-averaged transport by default. Set `fs.solver.transport_model` to `multicomponent` for multicomponent transport.
 - The sensitivity integration is serial over trajectories. One trajectory of a 1833-species mechanism took approximately 10 min on an NVIDIA L4 GPU.
-- The package does not build reduced mechanisms. It gives the species rank.
+- `gasig reduce` evaluates reduced mechanisms in memory and writes the selected mechanism only, not a file for every size.
+- The selection uses the ignition delay time. The flame speed is evaluated and reported, but it does not decide the selection.
 
 ## Reference
 
 Y.-J. Wu and K. C. Lin, GPU-Aided Sensitivity-in-graph (GA-SiG): An efficient sensitivity-based reduction method and its application to sustainable aviation fuel (submitted).
 
-Design details are in `docs/design.md`. The plan is in `docs/roadmap.md`. The license is MIT; refer to `LICENSE`.
+The user guide is `docs/user_guide.md`. Design details are in `docs/design.md`. The plan is in `docs/roadmap.md`. The license is MIT; refer to `LICENSE`.

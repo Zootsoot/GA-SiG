@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .sensitivity import Trajectory, flame_tip_index, residence_time
+from .trajectory import Trajectory, flame_tip_index, residence_time
 
 log = logging.getLogger(__name__)
 

@@ -41,5 +41,15 @@
     "target_species": ["CH4", "O2", "OH", "H2O", "CO2"],
     "combine": "hybrid",
     "hybrid_weight_idt": 0.5
+  },
+  "reduction": {
+    "step": 1,
+    "min_species": 15,
+    "error_tolerance": 0.05,
+    "write_mechanism": true
+  },
+  "report": {
+    "T_points": 12,
+    "plots": true
   }
 }

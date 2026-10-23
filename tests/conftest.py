@@ -1,4 +1,5 @@
 import pathlib
+import sys
 
 import pytest
 
@@ -8,6 +9,11 @@ try:
     _ct.suppress_thermo_warnings()
 except ImportError:  # pragma: no cover
     pass
+
+# The shared helpers (helpers_reduction.py) import as a plain module from this folder.
+TESTS_DIR = pathlib.Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 EXAMPLE = REPO / "example"

@@ -20,7 +20,6 @@ import csv
 import json
 import logging
 import platform
-import sys
 import time
 from pathlib import Path
 
@@ -34,12 +33,12 @@ from .config import ConfigError, load_config, public_config
 from .graph import combine_matrices, overall_importance, rank_species, resolve_targets
 from .io import load_fs_precomputed, load_idt_precomputed, save_fs_data, save_idt_data
 from .kinetics import TorchKinetics
+from .logs import log_failure, setup_logging, teardown_logging  # noqa: F401  (re-exported for callers and tests)
 from .sensitivity import Trajectory, integrate_trajectory
 from .solvers.flame import run_flame_set
 from .solvers.idt import run_idt_set
 
 log = logging.getLogger("gasig")
-_LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 
 def resolve_device(name: str) -> torch.device:
@@ -50,31 +49,6 @@ def resolve_device(name: str) -> torch.device:
     if name.startswith("cuda") and not torch.cuda.is_available():
         raise ConfigError(f"device '{name}' was requested but CUDA is not available; use 'cpu' or 'auto'.")
     return torch.device(name)
-
-
-def teardown_logging() -> None:
-    """Remove and close the handlers that :func:`setup_logging` added."""
-    logger = logging.getLogger("gasig")
-    for handler in list(logger.handlers):
-        if getattr(handler, "_gasig", False):
-            logger.removeHandler(handler)
-            handler.close()
-
-
-def setup_logging(output_dir: Path, level: str) -> None:
-    """Console and file logging for the 'gasig' logger tree."""
-    teardown_logging()
-    logger = logging.getLogger("gasig")
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(logging.Formatter(_LOG_FORMAT, "%H:%M:%S"))
-    console._gasig = True  # type: ignore[attr-defined]
-    logger.addHandler(console)
-    file_handler = logging.FileHandler(output_dir / "gasig.log", encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
-    file_handler._gasig = True  # type: ignore[attr-defined]
-    logger.addHandler(file_handler)
-    logger.propagate = False
 
 
 def _json_ready(obj):
@@ -261,6 +235,9 @@ def run(config_path: str | Path, device: str | None = None, stage: str = "all") 
     setup_logging(out_dir, cfg["log_level"])
     try:
         return _run_stages(cfg, config_path, out_dir, stage, t0)
+    except Exception:
+        log_failure(logging.getLogger("gasig.pipeline"), "the run failed")
+        raise
     finally:
         teardown_logging()
 

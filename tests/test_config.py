@@ -118,6 +118,43 @@ def test_load_config_file(tmp_path):
         load_config(tmp_path / "missing.json")
 
 
+def test_reduction_and_solver_value_checks(tmp_path):
+    for bad in ({"step": 0}, {"min_species": 0}, {"stop_error": 0.0}, {"keep_species": [1, 2]},
+                {"idt": {"max_steps": 0}}, {"idt": {"end_time_s": 0.0}}, {"idt": {"rtol": 0.0}},
+                {"idt": {"fuel": {}}}, {"idt": {"oxidizer": {"O2": -1.0}}}, {"idt": {"T_K": []}},
+                {"idt": {"phi": [1.0, True]}}, {"fs": {"domain_width_m": 0.0}}, {"fs": {"P_atm": []}}):
+        with pytest.raises(ConfigError, match="reduction"):
+            validate_config(minimal(reduction=bad), tmp_path)
+    with pytest.raises(ConfigError, match="null"):
+        validate_config(minimal(reduction={"idt": {"reactor": "bogus"}}), tmp_path)
+    with pytest.raises(ConfigError, match="target_species"):
+        validate_config(minimal(ranking={"target_species": ["OH", 3]}), tmp_path)
+    solver = {"fuel": {"CH4": 1.0}, "oxidizer": {"O2": 1.0}, "T_K": [1000.0], "P_atm": [1.0], "phi": [0.0]}
+    with pytest.raises(ConfigError, match="idt.solver.phi"):
+        validate_config({"mechanism": "m.yaml", "idt": {"enabled": True, "solver": solver}}, tmp_path)
+    solver["phi"] = [1.0]
+    solver["max_steps"] = 0
+    with pytest.raises(ConfigError, match="idt.solver.max_steps"):
+        validate_config({"mechanism": "m.yaml", "idt": {"enabled": True, "solver": solver}}, tmp_path)
+    solver["max_steps"] = 10
+    validate_config({"mechanism": "m.yaml", "idt": {"enabled": True, "solver": solver}}, tmp_path)
+
+
+def test_search_and_report_checks(tmp_path):
+    for bad in ({"error_tolerance": 0.0}, {"search": {"mode": "adaptive"}}, {"search": {"coarse_points": 1}},
+                {"search": {"importance_gap_probes": -1}}, {"search": {"near_miss_factor": 0.5}},
+                {"search": {"robust_window": -1}}, {"search": {"noise": -0.1}}, {"search": {"max_evaluations": 0}}):
+        with pytest.raises(ConfigError, match="reduction"):
+            validate_config(minimal(reduction=bad), tmp_path)
+    with pytest.raises(ConfigError, match="report.T_points"):
+        validate_config(minimal(report={"T_points": 1}), tmp_path)
+    cfg = validate_config(minimal(reduction={"error_tolerance": 0.05, "search": {"mode": "adaptive"}}), tmp_path)
+    assert cfg["reduction"]["search"]["early_exit"] is None and cfg["reduction"]["write_mechanism"] is True
+    assert cfg["report"] == {"T_points": 12, "plots": True}
+    template = validate_config(template_config(), tmp_path)
+    assert template["reduction"]["search"]["mode"] == "full"
+
+
 def test_schema_rows_cover_every_leaf():
     keys = {row[0] for row in schema_rows()}
     for expected in ("mechanism", "sensitivity.rate_law", "idt.solver.fuel", "fs.precomputed.velocity",

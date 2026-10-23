@@ -140,6 +140,72 @@ SCHEMA: dict[str, Any] = {
                                   "'S_row_sum' divides by the row sum of max abs(S) over reactions "
                                   "(the computation behind the published results)."),
     },
+    "reduction": {
+        "ranking_file": Spec(str, "ranked_species.csv", doc="Rank file in output_dir, written by the rank stage."),
+        "step": Spec(int, 1, doc="Species removed per sweep step."),
+        "min_species": Spec(int, 20, doc="The sweep stops before the mechanism has fewer species than this."),
+        "stop_error": Spec((*NUMBER, NoneType), None,
+                           doc="The sweep stops after the maximum IDT error exceeds this fraction; null runs to min_species."),
+        "keep_species": Spec(list, [], doc="Species that are never removed, besides the target species."),
+        "evaluate_fs": Spec(bool, False, doc="Also evaluate the flame speed error (slow)."),
+        "error_tolerance": Spec((*NUMBER, NoneType), None,
+                                doc="Relative IDT error limit for the selection of the reduced mechanism; "
+                                    "null selects no mechanism."),
+        "write_mechanism": Spec(bool, True,
+                                doc="Write the selected reduced mechanism as a Cantera YAML file (needs error_tolerance)."),
+        "search": {
+            "mode": Spec(str, "full", choices=("full", "adaptive"),
+                         doc="'full' evaluates every size in steps; 'adaptive' searches the smallest size "
+                             "within error_tolerance with few evaluations."),
+            "early_exit": Spec((bool, NoneType), None,
+                               doc="Stop a size at the first condition above error_tolerance; null means true "
+                                   "in adaptive mode and false in full mode."),
+            "coarse_points": Spec(int, 16, doc="Adaptive: number of sizes in the coarse pass, denser at small sizes."),
+            "importance_gap_probes": Spec(int, 5,
+                                          doc="Adaptive: the largest importance gaps of the rank are probed on both sides."),
+            "near_miss_factor": Spec(NUMBER, 2.0,
+                                     doc="Adaptive: a failed interval is refined when its smaller error is below "
+                                         "this factor times the tolerance."),
+            "robust_window": Spec(int, 3,
+                                  doc="Sizes above the optimum that must also pass for the robust optimum."),
+            "noise": Spec(NUMBER, 0.003,
+                          doc="Adaptive: errors within this band of the tolerance are undecided and resolved to width 1."),
+            "max_evaluations": Spec((int, NoneType), None,
+                                    doc="Adaptive: upper limit of reduced mechanisms evaluated; null is no limit."),
+        },
+        "idt": {
+            "fuel": Spec((dict, NoneType), None, doc="Overrides idt.solver.fuel for the evaluation."),
+            "oxidizer": Spec((dict, NoneType), None, doc="Overrides idt.solver.oxidizer."),
+            "T_K": Spec((list, NoneType), None, doc="Overrides idt.solver.T_K."),
+            "P_atm": Spec((list, NoneType), None, doc="Overrides idt.solver.P_atm."),
+            "phi": Spec((list, NoneType), None, doc="Overrides idt.solver.phi."),
+            "reactor": Spec((str, NoneType), None, choices=("constant_volume", "constant_pressure", None),
+                            doc="Overrides idt.solver.reactor."),
+            "end_time_s": Spec((*NUMBER, NoneType), None, doc="Overrides idt.solver.end_time_s."),
+            "reference_species": Spec((str, NoneType), None, doc="Overrides idt.solver.reference_species."),
+            "ignition_criterion": Spec((str, NoneType), None, choices=("reference_peak", "max_dTdt", None),
+                                       doc="Overrides idt.solver.ignition_criterion."),
+            "rtol": Spec((*NUMBER, NoneType), None, doc="Overrides idt.solver.rtol."),
+            "atol": Spec((*NUMBER, NoneType), None, doc="Overrides idt.solver.atol."),
+            "max_steps": Spec((int, NoneType), None, doc="Overrides idt.solver.max_steps."),
+        },
+        "fs": {
+            "fuel": Spec((dict, NoneType), None, doc="Overrides fs.solver.fuel for the evaluation."),
+            "oxidizer": Spec((dict, NoneType), None, doc="Overrides fs.solver.oxidizer."),
+            "T_unburnt_K": Spec((*NUMBER, NoneType), None, doc="Overrides fs.solver.T_unburnt_K."),
+            "P_atm": Spec((list, NoneType), None, doc="Overrides fs.solver.P_atm."),
+            "phi": Spec((list, NoneType), None, doc="Overrides fs.solver.phi."),
+            "domain_width_m": Spec((*NUMBER, NoneType), None, doc="Overrides fs.solver.domain_width_m."),
+            "transport_model": Spec((str, NoneType), None, choices=(*TRANSPORT_MODELS, None),
+                                    doc="Overrides fs.solver.transport_model."),
+            "loglevel": Spec((int, NoneType), None, doc="Overrides fs.solver.loglevel."),
+        },
+    },
+    "report": {
+        "T_points": Spec(int, 12,
+                         doc="Temperatures per pressure and equivalence ratio in the ignition-delay comparison."),
+        "plots": Spec(bool, True, doc="Write the PNG figures (needs Matplotlib)."),
+    },
     "ranking": {
         "target_species": Spec(list, [], doc="Target species names."),
         "combine": Spec(str, "auto", choices=("auto", "idt", "fs", "hybrid"),
@@ -177,7 +243,8 @@ def _validate(node_schema: dict, node: Any, where: str, base_dir: Path) -> dict:
             if not isinstance(value, spec.types):
                 raise ConfigError(f"'{path}' must be {_type_name(spec.types)}, got {type(value).__name__}.")
             if spec.choices is not None and value not in spec.choices:
-                raise ConfigError(f"'{path}' must be one of {list(spec.choices)}, got {value!r}.")
+                allowed = ", ".join("null" if c is None else repr(c) for c in spec.choices)
+                raise ConfigError(f"'{path}' must be one of {allowed}, got {value!r}.")
         elif spec.required:
             raise ConfigError(f"Missing required key '{path}'.")
         else:
@@ -192,6 +259,65 @@ def _require(cfg: dict, keys: list[str], where: str) -> None:
     missing = [k for k in keys if cfg.get(k) is None]
     if missing:
         raise ConfigError(f"'{where}' needs the keys {missing}.")
+
+
+def _is_positive_number(value) -> bool:
+    return isinstance(value, NUMBER) and not isinstance(value, bool) and float(value) > 0.0
+
+
+def _check_names(values: list, where: str) -> None:
+    bad = [v for v in values if not isinstance(v, str) or not v]
+    if bad:
+        raise ConfigError(f"'{where}' must hold species names (strings), got {bad[:3]}.")
+
+
+def _check_composition(block: dict, key: str, where: str) -> None:
+    comp = block.get(key)
+    if comp is None:
+        return
+    if not comp or not all(isinstance(k, str) and _is_positive_number(v) for k, v in comp.items()):
+        raise ConfigError(f"'{where}.{key}' must map species names to positive amounts, for example {{\"CH4\": 1.0}}.")
+
+
+def _check_positive_list(block: dict, key: str, where: str) -> None:
+    values = block.get(key)
+    if values is None:
+        return
+    if not values or not all(_is_positive_number(v) for v in values):
+        raise ConfigError(f"'{where}.{key}' must be a non-empty list of positive numbers.")
+
+
+def _check_positive(block: dict, key: str, where: str) -> None:
+    value = block.get(key)
+    if value is not None and not _is_positive_number(value):
+        raise ConfigError(f"'{where}.{key}' must be positive.")
+
+
+def _check_at_least(block: dict, key: str, where: str, minimum: int) -> None:
+    value = block.get(key)
+    if value is not None and value < minimum:
+        raise ConfigError(f"'{where}.{key}' must be at least {minimum}.")
+
+
+def _check_solver_values(cfg: dict) -> None:
+    """Range checks of the solver blocks and of their overrides in the reduction block."""
+    for where, block in (("idt.solver", cfg["idt"]["solver"]), ("reduction.idt", cfg["reduction"]["idt"])):
+        _check_composition(block, "fuel", where)
+        _check_composition(block, "oxidizer", where)
+        for key in ("T_K", "P_atm", "phi"):
+            _check_positive_list(block, key, where)
+        for key in ("end_time_s", "rtol", "atol"):
+            _check_positive(block, key, where)
+        _check_at_least(block, "max_steps", where, 1)
+    for where, block in (("fs.solver", cfg["fs"]["solver"]), ("reduction.fs", cfg["reduction"]["fs"])):
+        _check_composition(block, "fuel", where)
+        _check_composition(block, "oxidizer", where)
+        for key in ("P_atm", "phi"):
+            _check_positive_list(block, key, where)
+        for key in ("T_unburnt_K", "domain_width_m"):
+            _check_positive(block, key, where)
+    _check_names(cfg["reduction"]["keep_species"], "reduction.keep_species")
+    _check_names(cfg["ranking"]["target_species"], "ranking.target_species")
 
 
 def _check_mode_requirements(cfg: dict) -> None:
@@ -231,6 +357,33 @@ def _check_mode_requirements(cfg: dict) -> None:
             raise ConfigError("'sensitivity.max_substeps' must be at least 2 when the step-size guard is on.")
     if float(sens["concentration_floor"]) <= 0.0:
         raise ConfigError("'sensitivity.concentration_floor' must be positive.")
+    red = cfg["reduction"]
+    if red["step"] < 1:
+        raise ConfigError("'reduction.step' must be at least 1.")
+    if red["min_species"] < 1:
+        raise ConfigError("'reduction.min_species' must be at least 1.")
+    if red["stop_error"] is not None and float(red["stop_error"]) <= 0.0:
+        raise ConfigError("'reduction.stop_error' must be positive or null.")
+    if red["error_tolerance"] is not None and float(red["error_tolerance"]) <= 0.0:
+        raise ConfigError("'reduction.error_tolerance' must be positive or null.")
+    search = red["search"]
+    if search["mode"] == "adaptive" and red["error_tolerance"] is None:
+        raise ConfigError("'reduction.search.mode' adaptive needs 'reduction.error_tolerance'.")
+    if search["coarse_points"] < 2:
+        raise ConfigError("'reduction.search.coarse_points' must be at least 2.")
+    if search["importance_gap_probes"] < 0:
+        raise ConfigError("'reduction.search.importance_gap_probes' must be 0 or more.")
+    if float(search["near_miss_factor"]) < 1.0:
+        raise ConfigError("'reduction.search.near_miss_factor' must be at least 1.")
+    if search["robust_window"] < 0:
+        raise ConfigError("'reduction.search.robust_window' must be 0 or more.")
+    if float(search["noise"]) < 0.0:
+        raise ConfigError("'reduction.search.noise' must be 0 or more.")
+    if search["max_evaluations"] is not None and search["max_evaluations"] < 1:
+        raise ConfigError("'reduction.search.max_evaluations' must be at least 1 or null.")
+    if cfg["report"]["T_points"] < 2:
+        raise ConfigError("'report.T_points' must be at least 2.")
+    _check_solver_values(cfg)
 
 
 def validate_config(raw: dict, base_dir: str | Path) -> dict:
