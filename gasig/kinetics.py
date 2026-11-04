@@ -35,6 +35,8 @@ import numpy as np
 import torch
 import cantera as ct
 
+from .errors import ConfigError, MechanismCheckError
+
 
 class TorchKinetics:
     """Mass-action kinetics of a Cantera mechanism as differentiable torch code."""
@@ -50,7 +52,7 @@ class TorchKinetics:
         self_check: bool = True,
     ):
         if rate_law not in ("original", "corrected"):
-            raise ValueError("rate_law must be 'original' or 'corrected'.")
+            raise ConfigError("rate_law must be 'original' or 'corrected'.", rate_law=str(rate_law))
         gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
         self.gas = gas
         self.mech_file = mech_file
@@ -64,8 +66,9 @@ class TorchKinetics:
         self.floor = float(concentration_floor)
         tiny = float(torch.finfo(dtype).tiny)
         if self.floor < tiny:
-            raise ValueError(f"concentration_floor={concentration_floor:g} is below the smallest normal number "
-                             f"of {dtype} ({tiny:.3g}).")
+            raise ConfigError(f"concentration_floor={concentration_floor:g} is below the smallest normal number "
+                              f"of {dtype} ({tiny:.3g}).",
+                              concentration_floor=float(concentration_floor), dtype=str(dtype), tiny=tiny)
         # The clamp of the original rate law: 1e-300 in float64, the smallest normal number otherwise.
         self._orig_clamp = max(1e-300, tiny)
 
@@ -222,11 +225,14 @@ class TorchKinetics:
         err = float(max(err_f.max(), err_r.max()))
         if not np.isfinite(err) or err > rtol:
             worst = int(np.argmax(np.maximum(err_f, err_r)))
-            raise RuntimeError(
+            raise MechanismCheckError(
                 "The torch rate law does not reproduce Cantera for this mechanism "
                 f"(largest relative deviation {err:.3e}, tolerance {rtol:.1e}, worst reaction {worst}: "
                 f"'{self.gas.reaction(worst).equation}' of type '{self.reaction_types[worst]}'). "
-                "Check the mechanism for reaction types that GA-SiG does not support."
+                "Check the mechanism for reaction types that GA-SiG does not support.",
+                mechanism=str(self.mech_file), reaction_index=worst,
+                reaction=self.gas.reaction(worst).equation, reaction_type=str(self.reaction_types[worst]),
+                max_relative_deviation=err, rtol=rtol,
             )
         return err
 

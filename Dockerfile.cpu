@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1
-# GA-SiG CPU-only image: PyTorch 2.8.0 (CPU build) + Cantera 3.2.0 on Python 3.11.
+# GA-SiG CPU-only image: PyTorch 2.8.0 (CPU build) + Cantera 3.2.0 on Python 3.11, with the Zero-RK
+# flame solvers (LLNL, BSD-3-Clause) for the flame-speed backend `fs.solver.backend: "zerork"`.
 # About one tenth of the size of the CUDA image. Use it on machines without an NVIDIA GPU.
 #
 # Build:  docker build -f Dockerfile.cpu -t ga-sig:cpu .
+#         docker build -f Dockerfile.cpu --target gasig -t ga-sig:cpu .    # without Zero-RK, builds in minutes
 # Run:    docker run --rm -v "<run folder>:/workspace" ga-sig:cpu run config.json
 
-FROM python:3.11-slim AS deps
+FROM python:3.11-slim-trixie AS deps
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -15,7 +17,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.8.0" \
     && pip install "numpy==1.26.4" "cantera==3.2.0" "matplotlib>=3.7" "pytest>=7"
 
-FROM deps AS app
+FROM deps AS gasig
 
 WORKDIR /opt/ga-sig
 COPY pyproject.toml README.md LICENSE ./
@@ -25,3 +27,41 @@ RUN pip install --no-deps .
 WORKDIR /workspace
 ENTRYPOINT ["python", "-m", "gasig"]
 CMD ["--help"]
+
+# Zero-RK (https://github.com/LLNL/zero-rk) from source at a fixed commit. Its CMake downloads and builds
+# SUNDIALS 5.8.0, SuperLU and SuperLU_DIST 6.4.1; MPI and BLAS/LAPACK come from Debian. The flame solvers
+# exist only in the MPI build. The stage does not depend on the package files, so BuildKit runs it in parallel.
+# Both stages pin the same Debian suite (trixie: Open MPI 5.0), so a rebuild cannot change the MPI version.
+FROM python:3.11-slim-trixie AS zerork
+
+ARG ZERORK_REF=672186f548886f4a364cbab414bf65608ae454ec
+ARG ZERORK_JOBS=6
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git ca-certificates libopenmpi-dev openmpi-bin libopenblas-dev liblapack-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git init -q /opt/zero-rk-src && cd /opt/zero-rk-src \
+    && git remote add origin https://github.com/LLNL/zero-rk.git \
+    && git fetch -q --depth 1 origin "${ZERORK_REF}" && git checkout -q FETCH_HEAD
+
+ENV CMAKE_BUILD_PARALLEL_LEVEL=${ZERORK_JOBS}
+RUN cmake -S /opt/zero-rk-src -B /opt/zero-rk-build -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/zero-rk -DENABLE_MPI=ON -DZERORK_TESTS=OFF \
+    && cmake --build /opt/zero-rk-build -j "${ZERORK_JOBS}" \
+    && cmake --install /opt/zero-rk-build \
+    && git -C /opt/zero-rk-src rev-parse HEAD > /opt/zero-rk/COMMIT \
+    && rm -rf /opt/zero-rk-build /opt/zero-rk-src
+
+FROM gasig AS app
+
+RUN apt-get update && apt-get install -y --no-install-recommends openmpi-bin libopenblas0 liblapack3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=zerork /opt/zero-rk /opt/zero-rk
+
+# Open MPI refuses to run as root without these two variables. The package starts the solver with
+# `mpirun --oversubscribe` (fs.solver.zerork.mpiexec), which Open MPI 4 and 5 both accept.
+ENV ZERORK_HOME=/opt/zero-rk \
+    PATH=/opt/zero-rk/bin:$PATH \
+    OMPI_ALLOW_RUN_AS_ROOT=1 \
+    OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1

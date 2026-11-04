@@ -35,6 +35,7 @@ import time
 import cantera as ct
 import numpy as np
 
+from ..errors import ConfigError, IgnitionSolverError, MechanismError
 from ..trajectory import Trajectory
 
 log = logging.getLogger(__name__)
@@ -147,16 +148,23 @@ def run_idt(
     reactor = _make_reactor(gas, solver_cfg["reactor"], clone=True)
     phase = _phase_of(reactor)
     net = ct.ReactorNet([reactor])
-    try:
-        net.preconditioner = ct.AdaptivePreconditioner()
-    except Exception as exc:  # pragma: no cover - depends on the Cantera build
-        log.debug("Adaptive preconditioner not used: %s", exc)
+    # Cantera accepts the adaptive preconditioner on the mole-based reactors only, which
+    # _make_reactor builds; the network then solves its linear systems with GMRES.
+    precond = solver_cfg.get("preconditioner", "adaptive")
+    if precond != "none":
+        try:
+            net.preconditioner = ct.AdaptivePreconditioner()
+            if precond == "adaptive_fast":
+                net.derivative_settings = {"skip-third-bodies": True, "skip-falloff": True}
+        except Exception as exc:  # pragma: no cover - depends on the Cantera build
+            log.debug("Adaptive preconditioner not used: %s", exc)
     net.rtol = float(solver_cfg["rtol"])
     net.atol = float(solver_cfg["atol"])
 
     ref = solver_cfg["reference_species"]
     if ref not in gas.species_names:
-        raise ValueError(f"Reference species '{ref}' is not in the mechanism.")
+        raise MechanismError(f"Reference species '{ref}' is not in the mechanism.", species=str(ref),
+                             label=label or None, n_species=int(gas.n_species))
     ref_index = gas.species_index(ref)
 
     end_time = float(solver_cfg["end_time_s"])
@@ -169,18 +177,23 @@ def run_idt(
 
     t_start = time.perf_counter()
     n = 0
-    while net.time < end_time and n < max_steps:
-        t = net.step()
-        n += 1
-        Y = np.clip(np.array(phase.Y, dtype=float), 0.0, None)
-        s = Y.sum()
-        if s > 0.0:
-            Y /= s
-        t_hist.append(float(t))
-        T_hist.append(float(phase.T))
-        P_hist.append(float(phase.P))
-        Y_hist.append(Y)
-        ref_hist.append(float(phase.X[ref_index]))
+    try:
+        while net.time < end_time and n < max_steps:
+            t = net.step()
+            n += 1
+            Y = np.clip(np.array(phase.Y, dtype=float), 0.0, None)
+            s = Y.sum()
+            if s > 0.0:
+                Y /= s
+            t_hist.append(float(t))
+            T_hist.append(float(phase.T))
+            P_hist.append(float(phase.P))
+            Y_hist.append(Y)
+            ref_hist.append(float(phase.X[ref_index]))
+    except ct.CanteraError as exc:
+        raise IgnitionSolverError(str(exc), label=label or None, T0_K=float(T0), P0_atm=float(P0) / ct.one_atm,
+                                  phi=float(phi), reactor=solver_cfg["reactor"], t_s=t_hist[-1],
+                                  n_steps=n) from exc
     if n >= max_steps:
         log.warning("%s: reached max_steps=%d at t=%.3e s before end_time=%.3e s.", label, max_steps, net.time, end_time)
 
@@ -191,10 +204,12 @@ def run_idt(
     if note:
         log.warning("%s: %s", label, note)
     if i_ign == 0 and T_rise >= MIN_TEMPERATURE_RISE_K and solver_cfg["ignition_criterion"] == "reference_peak":
-        raise ValueError(
+        raise ConfigError(
             f"{label}: the reactor ignited (temperature rise {T_rise:.0f} K) but the reference species "
             f"'{ref}' peaks at the first sample; it is a reactant or a diluent. Choose a radical such as OH "
-            "as reference_species, or set ignition_criterion to 'max_dTdt'."
+            "as reference_species, or set ignition_criterion to 'max_dTdt'.",
+            label=label or None, species=str(ref), T0_K=float(T0), P0_atm=float(P0) / ct.one_atm,
+            phi=float(phi), temperature_rise_K=T_rise,
         )
     # An ignition sample at t = 0 (possible with max_dTdt for a mixture that reacts at once)
     # gives no ignition delay; it is reported as no ignition.
@@ -217,8 +232,9 @@ def run_idt(
 def run_idt_set(mech_file: str, phase_name: str | None, solver_cfg: dict) -> list[Trajectory]:
     """Run every condition of the idt solver block."""
     conditions = idt_conditions(solver_cfg)
-    log.info("idt solver: %d conditions (%s reactor, end time %.3e s).",
-             len(conditions), solver_cfg["reactor"], solver_cfg["end_time_s"])
+    log.info("idt solver: %d conditions (%s reactor, end time %.3e s, preconditioner %s).",
+             len(conditions), solver_cfg["reactor"], solver_cfg["end_time_s"],
+             solver_cfg.get("preconditioner", "adaptive"))
     gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
     trajs = []
     for m, (T0, P0, phi) in enumerate(conditions):
@@ -228,5 +244,5 @@ def run_idt_set(mech_file: str, phase_name: str | None, solver_cfg: dict) -> lis
             continue
         trajs.append(traj)
     if not trajs:
-        raise RuntimeError("The idt solver produced no usable trajectory.")
+        raise IgnitionSolverError("The idt solver produced no usable trajectory.", n_conditions=len(conditions))
     return trajs

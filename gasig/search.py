@@ -12,6 +12,10 @@ logic without Cantera, so that it runs on synthetic curves in the tests:
   near-miss refinement, noise band, robust window, evaluation budget
 * :func:`select_optima`: the strict and the robust optimum of an evaluated
   set of sizes
+* :func:`greedy_search`: one species per test in rank order
+* :func:`lk_greedy_search`: pieces (chain units and single species) of the
+  LK order, tier-0 pieces in blocks that are halved on failure, and an
+  optional second pass at a second tolerance
 
 Two optima
 ----------
@@ -212,3 +216,226 @@ def adaptive_search(evaluate: Callable[[int], float], n_max: int, n_min: int, to
                                "smallest_error": min(errors[lo], errors[hi])})
     return SearchResult(errors=errors, strict_optimum=strict, robust_optimum=robust,
                         unresolved=unresolved, budget_exhausted=exhausted)
+
+
+@dataclass
+class GreedyResult:
+    accepted: list[str]                 # species removed, in the order of acceptance
+    kept_back: list[str]                # species kept because their removal broke the tolerance
+    tests: list[dict] = field(default_factory=list)   # one entry per test: species, size, error, accepted
+    budget_exhausted: bool = False
+
+    @property
+    def evaluations(self) -> int:
+        return len(self.tests)
+
+
+def greedy_search(evaluate: Callable[[list[str]], float], candidates: list[str], n_max: int, n_min: int,
+                  tol: float, params: SearchParams | None = None) -> GreedyResult:
+    """Remove the candidates one at a time and keep every species whose removal breaks ``tol``.
+
+    ``evaluate(removed)`` returns the maximum relative error of the mechanism
+    without the species in ``removed``; ``inf`` means that a condition did not
+    ignite. Each test removes the next candidate on top of the removals
+    accepted so far. The pass accepts a removal when the error is at or below
+    ``tol``. It ends at ``n_min`` species, at the end of the candidates or
+    when the tests reach ``max_evaluations``.
+    """
+    params = params or SearchParams()
+    if n_min > n_max:
+        raise ValueError(f"n_min {n_min} is above n_max {n_max}.")
+    limit = params.max_evaluations if params.max_evaluations is not None else math.inf
+    accepted: list[str] = []
+    kept_back: list[str] = []
+    tests: list[dict] = []
+    exhausted = False
+    for species in candidates:
+        if n_max - len(accepted) <= n_min:
+            break
+        if len(tests) >= limit:
+            exhausted = True
+            break
+        error = float(evaluate(accepted + [species]))
+        ok = error <= tol
+        tests.append({"species": species, "n_species": n_max - len(accepted) - 1, "error": error, "accepted": ok})
+        if ok:
+            accepted.append(species)
+        else:
+            kept_back.append(species)
+    return GreedyResult(accepted=accepted, kept_back=kept_back, tests=tests, budget_exhausted=exhausted)
+
+
+# ----------------------------------------------------------------------------- greedy pass in pieces and blocks
+
+def greedy_pieces(order: list[str], units: list[list[str]]) -> list[tuple[str, ...]]:
+    """The pieces of a removal order: a chain unit, or a single species.
+
+    A unit sits at the position of its first member in ``order`` and lists
+    its members in their order. A species of a unit is never a piece of its
+    own. Every member of a unit must be in ``order``.
+    """
+    pos = {s: i for i, s in enumerate(order)}
+    unit_of: dict[str, tuple[str, ...]] = {}
+    for unit in units:
+        missing = [s for s in unit if s not in pos]
+        if missing:
+            raise ValueError(f"the unit {unit} has members that are not in the order: {missing}")
+        members = tuple(sorted(unit, key=pos.__getitem__))
+        for s in members:
+            if s in unit_of:
+                raise ValueError(f"{s} is in more than one unit.")
+            unit_of[s] = members
+    out, seen = [], set()
+    for s in order:
+        if s not in seen:
+            piece = unit_of.get(s, (s,))
+            seen.update(piece)
+            out.append(piece)
+    return out
+
+
+def greedy_items(pieces: list[tuple[str, ...]], tier0: set[str], block: int) -> list[list[tuple[str, ...]]]:
+    """The test items of the first pass: lists of pieces.
+
+    Consecutive pieces whose members are all in ``tier0`` form blocks of up
+    to ``block`` species; a tier-0 piece larger than ``block`` is a block of
+    its own. Every other piece is an item alone.
+    """
+    if block < 1:
+        raise ValueError("block must be at least 1.")
+    out: list[list[tuple[str, ...]]] = []
+    cur: list[tuple[str, ...]] = []
+    for p in pieces:
+        if all(s in tier0 for s in p):
+            if cur and sum(map(len, cur)) + len(p) > block:
+                out.append(cur)
+                cur = []
+            cur.append(p)
+        else:
+            if cur:
+                out.append(cur)
+                cur = []
+            out.append([p])
+    if cur:
+        out.append(cur)
+    return out
+
+
+@dataclass
+class GreedyPass:
+    tolerance: float
+    accepted: list[str]                                 # species removed in this pass, in the order of acceptance
+    kept: list[tuple[str, ...]]                         # pieces whose test failed alone
+    untested: list[tuple[str, ...]] = field(default_factory=list)   # pieces not tested (size limit or budget)
+    tests: list[dict] = field(default_factory=list)     # one entry per test, cached repeats included
+
+    @property
+    def evaluations(self) -> int:
+        return sum(1 for t in self.tests if not t["cached"])
+
+
+@dataclass
+class LKGreedyResult:
+    passes: list[GreedyPass]
+    budget_exhausted: bool = False
+
+    @property
+    def accepted(self) -> list[str]:
+        """Every removal of every pass, in the order of acceptance."""
+        return [s for p in self.passes for s in p.accepted]
+
+    @property
+    def evaluations(self) -> int:
+        return sum(p.evaluations for p in self.passes)
+
+
+def _piece_kind(item: list[tuple[str, ...]]) -> str:
+    if len(item) > 1:
+        return "block"
+    return "unit" if len(item[0]) > 1 else "single"
+
+
+def lk_greedy_search(evaluate: Callable[[list[str], float, dict], float], order: list[str],
+                     units: list[list[str]], tier0: set[str], block: int, tolerances: tuple,
+                     n_max: int, n_min: int, params: SearchParams | None = None) -> LKGreedyResult:
+    """Greedy passes over the pieces of ``order``, with tier-0 blocks.
+
+    ``evaluate(removed, tol, test)`` returns the maximum relative error of the
+    mechanism without the species in ``removed`` (``inf``: no ignition or a
+    failed solve); ``test`` describes the test (pass, kind, members). A test
+    passes when the error is at or below its tolerance.
+
+    Pass 1 walks the items of :func:`greedy_items` at ``tolerances[0]``. A
+    passed item is removed. A failed block is halved by pieces and its halves
+    go first in the queue, down to single pieces. A failed piece stays in the
+    mechanism. With a second tolerance, pass 2 starts from the removals of
+    pass 1 and tests every piece that pass 1 kept, alone and in order.
+
+    A test of a removed set already tested at the same tolerance repeats the
+    stored result without an evaluation; this happens when the first half of
+    a failed block passes, because the second half then repeats the block. An
+    item that would leave fewer than ``n_min`` species is not tested: a block
+    is halved, a piece goes to ``untested``. When ``max_evaluations`` is
+    reached, the remaining pieces go to ``untested`` and no second pass runs.
+
+    If the error never falls when a species leaves, the result equals the
+    piece-by-piece pass with fewer evaluations.
+    """
+    params = params or SearchParams()
+    if n_min > n_max:
+        raise ValueError(f"n_min {n_min} is above n_max {n_max}.")
+    if not 1 <= len(tolerances) <= 2:
+        raise ValueError("tolerances must hold one or two values.")
+    limit = params.max_evaluations if params.max_evaluations is not None else math.inf
+    cache: dict[tuple[float, frozenset], float] = {}
+    state = {"evaluations": 0, "exhausted": False}
+
+    def run_pass(number: int, items: list[list[tuple[str, ...]]], tol: float, start: list[str]) -> GreedyPass:
+        result = GreedyPass(tolerance=tol, accepted=[], kept=[])
+        removed = list(start)
+        queue = [list(it) for it in items]
+        while queue:
+            item = queue.pop(0)
+            members = [s for p in item for s in p]
+            if n_max - len(removed) - len(members) < n_min:
+                if len(item) > 1:
+                    h = (len(item) + 1) // 2
+                    queue[0:0] = [item[:h], item[h:]]
+                else:
+                    result.untested.append(item[0])
+                continue
+            candidate = removed + members
+            key = (tol, frozenset(candidate))
+            cached = key in cache
+            if not cached and state["evaluations"] >= limit:
+                state["exhausted"] = True
+                result.untested.extend(p for it in [item] + queue for p in it)
+                break
+            test = {"pass": number, "kind": _piece_kind(item), "pieces": [list(p) for p in item], "members": members,
+                    "n_species": n_max - len(candidate), "tolerance": tol}
+            if cached:
+                error = cache[key]
+            else:
+                error = float(evaluate(candidate, tol, test))
+                cache[key] = error
+                state["evaluations"] += 1
+            ok = error <= tol
+            result.tests.append({**test, "error": error, "accepted": ok, "cached": cached})
+            if ok:
+                removed = candidate
+                result.accepted.extend(members)
+            elif len(item) > 1:
+                h = (len(item) + 1) // 2
+                queue[0:0] = [item[:h], item[h:]]
+            else:
+                result.kept.append(item[0])
+        return result
+
+    pieces = greedy_pieces(order, units)
+    first = run_pass(1, greedy_items(pieces, tier0, block), float(tolerances[0]), [])
+    passes = [first]
+    if len(tolerances) == 2 and first.kept and state["evaluations"] >= limit:
+        state["exhausted"] = True                       # the budget ends with pass 1: no second pass
+    if len(tolerances) == 2 and not state["exhausted"]:
+        passes.append(run_pass(2, [[p] for p in first.kept], float(tolerances[1]), first.accepted))
+    return LKGreedyResult(passes=passes, budget_exhausted=state["exhausted"])

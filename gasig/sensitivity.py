@@ -28,6 +28,7 @@ import numpy as np
 import torch
 
 from .jacobian import jacobians
+from .errors import IntegrationError
 from .kinetics import TorchKinetics
 from .trajectory import Trajectory, flame_tip_index, residence_time  # noqa: F401  (re-exported)
 
@@ -147,7 +148,8 @@ def integrate_trajectory(
             log.warning("%s: step %d reached max_substeps=%d without convergence (dtau=%.3e s).",
                         name, k + 1, max_substeps, dtau)
         if not torch.isfinite(S).all():
-            raise RuntimeError(f"{name}: non-finite sensitivities at step {k + 1} (tau={traj.tau[k + 1]:.6e} s).")
+            raise IntegrationError(f"{name}: non-finite sensitivities at step {k + 1} (tau={traj.tau[k + 1]:.6e} s).",
+                                   stage="sensitivity", label=name, step=k + 1, tau_s=float(traj.tau[k + 1]))
         if progress_every and (k + 1) % progress_every == 0:
             log.info("%s: step %d/%d, tau=%.4e s, T=%.1f K, substeps=%d",
                      name, k + 1, traj.end_index, traj.tau[k + 1], T, n_sub)

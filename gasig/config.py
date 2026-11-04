@@ -12,6 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .errors import ConfigError  # re-exported: gasig.config.ConfigError
+
 NoneType = type(None)
 NUMBER = (int, float)
 
@@ -19,10 +21,6 @@ TRANSPORT_MODELS = (
     "mixture-averaged", "multicomponent", "unity-Lewis-number",
     "mixture-averaged-CK", "multicomponent-CK", "ionized-gas",
 )
-
-
-class ConfigError(ValueError):
-    """Raised when the configuration file is invalid."""
 
 
 class Spec:
@@ -82,6 +80,10 @@ SCHEMA: dict[str, Any] = {
             "rtol": Spec(NUMBER, 1e-6, doc="Relative tolerance of the reactor integrator."),
             "atol": Spec(NUMBER, 1e-12, doc="Absolute tolerance of the reactor integrator."),
             "max_steps": Spec(int, 200000, doc="Upper limit of solver steps per trajectory."),
+            "preconditioner": Spec(str, "adaptive", choices=("adaptive", "adaptive_fast", "none"),
+                                   doc="Linear solver of the reactor network: 'adaptive' is Cantera's adaptive "
+                                       "preconditioner with GMRES; 'adaptive_fast' also leaves the third-body and "
+                                       "falloff terms out of the preconditioner; 'none' is the dense solver."),
             "skip_unignited": Spec(bool, False, doc="Drop trajectories with no detected ignition."),
             "save_trajectories": Spec(bool, True, doc="Write the trajectories to idt_data/ in the precomputed format."),
         },
@@ -108,7 +110,41 @@ SCHEMA: dict[str, Any] = {
             "phi": Spec((list, NoneType), None, doc="Equivalence ratios."),
             "domain_width_m": Spec(NUMBER, 0.03, doc="Width of the flame domain [m]."),
             "transport_model": Spec(str, "mixture-averaged", choices=TRANSPORT_MODELS,
-                                    doc="Cantera transport model of the flame."),
+                                    doc="Cantera transport model of the flame; the zerork backend ignores it."),
+            "backend": Spec(str, "cantera", choices=("cantera", "zerork"),
+                            doc="'cantera' solves the FreeFlame; 'zerork' runs the Zero-RK premixed steady flame "
+                                "solver (constant Lewis numbers, MPI) from the install in zerork.home."),
+            "zerork": {
+                "home": Spec((str, NoneType), None, path=True,
+                             doc="Zero-RK install folder with bin/premixed_steady_flame_solver.x, relative to the "
+                                 "configuration file; null uses the environment variable ZERORK_HOME, then "
+                                 "/opt/zero-rk (the Docker image)."),
+                "processes": Spec((int, NoneType), None,
+                                  doc="MPI ranks per flame; null uses the CPUs available to the process, at most 8."),
+                "mpiexec": Spec(str, "mpirun --oversubscribe",
+                                doc="MPI launcher command; '-n <processes>' is appended. Without the launcher on "
+                                    "PATH the serial solver runs."),
+                "min_points_per_thickness": Spec(NUMBER, 12,
+                                                 doc="Grid points per flame thickness that end the regrid loop."),
+                "rel_tol": Spec(NUMBER, 1e-2, doc="Relative tolerance of the steady solver."),
+                "lewis_temperature_K": Spec(NUMBER, 1500.0,
+                                            doc="Temperature at which the Lewis numbers of the inlet mixture are "
+                                                "evaluated."),
+                "max_solves": Spec(int, 10, doc="Upper limit of solver calls per flame (start plus regrids)."),
+                "continuation": Spec(bool, True,
+                                     doc="Start each flame from the nearest flame that this process solved (same "
+                                         "mechanism first, else another one) instead of the cold pseudo-unsteady "
+                                         "start; the cold start runs if this start fails."),
+                "timeout_s": Spec((*NUMBER, NoneType), None,
+                                  doc="Time limit of one solver call [s]; a call over the limit counts as failed and "
+                                      "the next attempt runs; null is none."),
+                "work_dir": Spec((str, NoneType), None, path=True,
+                                 doc="Folder for the solver files, relative to the configuration file: one "
+                                     "subfolder run-<pid>/<flame> per process and flame, and mechanisms/ for the "
+                                     "CHEMKIN files; null uses a temporary folder."),
+                "keep_files": Spec(bool, False, doc="Keep the solver files of every flame (input, logs, data, grid) "
+                                                    "in work_dir; needs work_dir."),
+            },
             "refine": {
                 "ratio": Spec(NUMBER, 3.0, doc="Grid refinement: maximum ratio of adjacent cell widths."),
                 "slope": Spec(NUMBER, 0.06, doc="Grid refinement: slope criterion."),
@@ -154,12 +190,29 @@ SCHEMA: dict[str, Any] = {
         "write_mechanism": Spec(bool, True,
                                 doc="Write the selected reduced mechanism as a Cantera YAML file (needs error_tolerance)."),
         "search": {
-            "mode": Spec(str, "full", choices=("full", "adaptive"),
-                         doc="'full' evaluates every size in steps; 'adaptive' searches the smallest size "
-                             "within error_tolerance with few evaluations."),
+            "mode": Spec(str, "full", choices=("full", "adaptive", "greedy", "lk_greedy"),
+                         doc="'full' evaluates every size in steps. 'adaptive' searches the smallest size "
+                             "within error_tolerance with few evaluations. 'greedy' tests one species at a "
+                             "time and keeps a species whose removal breaks error_tolerance. 'lk_greedy' "
+                             "walks the LK order of lk.output_file in pieces (chain units and single "
+                             "species), tests tier-0 pieces in blocks, and can make a second pass."),
             "early_exit": Spec((bool, NoneType), None,
                                doc="Stop a size at the first condition above error_tolerance; null means true "
-                                   "in adaptive mode and false in full mode."),
+                                   "in adaptive, greedy and lk_greedy mode and false in full mode."),
+            "block_size": Spec(int, 16,
+                               doc="lk_greedy: upper limit of species in one block of consecutive tier-0 pieces; "
+                                   "a failed block is halved by pieces. 1 tests every piece alone."),
+            "tier0_score": Spec(NUMBER, 0.003,
+                                doc="lk_greedy: a piece is tier 0 when every member has an LK score at or "
+                                    "below this value."),
+            "pass2_tolerance": Spec((*NUMBER, NoneType), None,
+                                    doc="lk_greedy: tolerance of a second pass that tests the kept pieces again "
+                                        "after the removals of the first pass; at least error_tolerance; null "
+                                        "makes no second pass."),
+            "units": Spec((list, NoneType), None,
+                          doc="lk_greedy: chain units, a list of lists of species names; null reads the units "
+                              "that the detection stage wrote to units.output_file. A unit is one piece at the "
+                              "position of its first member in the LK order and is never split."),
             "coarse_points": Spec(int, 16, doc="Adaptive: number of sizes in the coarse pass, denser at small sizes."),
             "importance_gap_probes": Spec(int, 5,
                                           doc="Adaptive: the largest importance gaps of the rank are probed on both sides."),
@@ -171,7 +224,8 @@ SCHEMA: dict[str, Any] = {
             "noise": Spec(NUMBER, 0.003,
                           doc="Adaptive: errors within this band of the tolerance are undecided and resolved to width 1."),
             "max_evaluations": Spec((int, NoneType), None,
-                                    doc="Adaptive: upper limit of reduced mechanisms evaluated; null is no limit."),
+                                    doc="Adaptive, greedy and lk_greedy: upper limit of reduced mechanisms "
+                                        "evaluated; null is no limit."),
         },
         "idt": {
             "fuel": Spec((dict, NoneType), None, doc="Overrides idt.solver.fuel for the evaluation."),
@@ -188,6 +242,8 @@ SCHEMA: dict[str, Any] = {
             "rtol": Spec((*NUMBER, NoneType), None, doc="Overrides idt.solver.rtol."),
             "atol": Spec((*NUMBER, NoneType), None, doc="Overrides idt.solver.atol."),
             "max_steps": Spec((int, NoneType), None, doc="Overrides idt.solver.max_steps."),
+            "preconditioner": Spec((str, NoneType), None, choices=("adaptive", "adaptive_fast", "none", None),
+                                   doc="Overrides idt.solver.preconditioner."),
         },
         "fs": {
             "fuel": Spec((dict, NoneType), None, doc="Overrides fs.solver.fuel for the evaluation."),
@@ -199,6 +255,8 @@ SCHEMA: dict[str, Any] = {
             "transport_model": Spec((str, NoneType), None, choices=(*TRANSPORT_MODELS, None),
                                     doc="Overrides fs.solver.transport_model."),
             "loglevel": Spec((int, NoneType), None, doc="Overrides fs.solver.loglevel."),
+            "backend": Spec((str, NoneType), None, choices=("cantera", "zerork", None),
+                            doc="Overrides fs.solver.backend for the evaluation."),
         },
     },
     "report": {
@@ -213,6 +271,36 @@ SCHEMA: dict[str, Any] = {
         "hybrid_weight_idt": Spec(NUMBER, 0.5, doc="Weight of r_AB(idt) in the hybrid matrix."),
         "eps_edge": Spec(NUMBER, 1e-16, doc="Entries of r_AB at or below this value are not graph edges."),
         "top_n_print": Spec(int, 15, doc="Number of species listed at each end of the rank in the log and summary."),
+    },
+    "lk": {
+        "enabled": Spec(bool, False,
+                        doc="Run the linearised knockout (LK) after the ranking: one knockout per species, "
+                            "integrated along the idt trajectories without a new solve. Needs the idt mode."),
+        "trajectories": Spec((list, NoneType), None,
+                             doc="Indices of the idt trajectories that the LK screens (the order of "
+                                 "trajectories_idt.json); null screens every trajectory."),
+        "sample_fraction": Spec(NUMBER, 0.5,
+                                doc="The LK score is taken at the stored sample nearest to this fraction of "
+                                    "the end time, in (0, 1]."),
+        "rate_law": Spec(str, "corrected", choices=("original", "corrected"),
+                         doc="Rate law of the LK Jacobians; 'corrected' reproduces Cantera's rates."),
+        "output_file": Spec(str, "lk_order.csv",
+                            doc="LK order in output_dir, in the format of ranked_species.csv; the column "
+                                "'importance' holds the LK score. lk_greedy reads this file."),
+    },
+    "units": {
+        "detect": Spec(bool, False,
+                       doc="Detect the chain units after the ranking from the reaction extents along every "
+                           "idt trajectory (no torch). Needs the idt mode."),
+        "scope": Spec(str, "all", choices=("all", "tail"),
+                      doc="'all' searches every removable species; 'tail' only the removable species below the "
+                          "median GA-SiG importance of the removable species."),
+        "share": Spec(NUMBER, 0.01,
+                      doc="A reaction is significant for a species when it gives more than this share of the "
+                          "time-integrated production (or consumption) of the species."),
+        "output_file": Spec(str, "chain_units.json",
+                            doc="Detected units in output_dir; lk_greedy reads it when reduction.search.units "
+                                "is null."),
     },
 }
 
@@ -316,6 +404,16 @@ def _check_solver_values(cfg: dict) -> None:
             _check_positive_list(block, key, where)
         for key in ("T_unburnt_K", "domain_width_m"):
             _check_positive(block, key, where)
+    zerork = cfg["fs"]["solver"]["zerork"]
+    _check_at_least(zerork, "processes", "fs.solver.zerork", 1)
+    _check_at_least(zerork, "max_solves", "fs.solver.zerork", 1)
+    for key in ("min_points_per_thickness", "rel_tol", "lewis_temperature_K", "timeout_s"):
+        _check_positive(zerork, key, "fs.solver.zerork")
+    if not zerork["mpiexec"].strip():
+        raise ConfigError("'fs.solver.zerork.mpiexec' must name the MPI launcher.")
+    if zerork["keep_files"] and not zerork["work_dir"]:
+        raise ConfigError("'fs.solver.zerork.keep_files' needs 'fs.solver.zerork.work_dir' (a folder in the run "
+                          "folder, so that the files survive the container).")
     _check_names(cfg["reduction"]["keep_species"], "reduction.keep_species")
     _check_names(cfg["ranking"]["target_species"], "ranking.target_species")
 
@@ -367,8 +465,8 @@ def _check_mode_requirements(cfg: dict) -> None:
     if red["error_tolerance"] is not None and float(red["error_tolerance"]) <= 0.0:
         raise ConfigError("'reduction.error_tolerance' must be positive or null.")
     search = red["search"]
-    if search["mode"] == "adaptive" and red["error_tolerance"] is None:
-        raise ConfigError("'reduction.search.mode' adaptive needs 'reduction.error_tolerance'.")
+    if search["mode"] in ("adaptive", "greedy", "lk_greedy") and red["error_tolerance"] is None:
+        raise ConfigError(f"'reduction.search.mode' {search['mode']} needs 'reduction.error_tolerance'.")
     if search["coarse_points"] < 2:
         raise ConfigError("'reduction.search.coarse_points' must be at least 2.")
     if search["importance_gap_probes"] < 0:
@@ -381,6 +479,45 @@ def _check_mode_requirements(cfg: dict) -> None:
         raise ConfigError("'reduction.search.noise' must be 0 or more.")
     if search["max_evaluations"] is not None and search["max_evaluations"] < 1:
         raise ConfigError("'reduction.search.max_evaluations' must be at least 1 or null.")
+    if search["block_size"] < 1:
+        raise ConfigError("'reduction.search.block_size' must be at least 1.")
+    if float(search["tier0_score"]) < 0.0:
+        raise ConfigError("'reduction.search.tier0_score' must be 0 or more.")
+    p2 = search["pass2_tolerance"]
+    if p2 is not None and red["error_tolerance"] is not None and float(p2) < float(red["error_tolerance"]):
+        raise ConfigError("'reduction.search.pass2_tolerance' must be at least 'reduction.error_tolerance' or null.")
+    units = search["units"] or []
+    if not all(isinstance(u, list) and u for u in units):
+        raise ConfigError("'reduction.search.units' must be null or a list of non-empty lists of species names.")
+    for k, unit in enumerate(units):
+        _check_names(unit, f"reduction.search.units[{k}]")
+    members = [s for u in units for s in u]
+    repeated = sorted({s for s in members if members.count(s) > 1})
+    if repeated:
+        raise ConfigError(f"'reduction.search.units' names species in more than one place: {repeated[:5]}.")
+    lk = cfg["lk"]
+    if (lk["enabled"] or search["mode"] == "lk_greedy") and not cfg["idt"]["enabled"]:
+        raise ConfigError("the linearised knockout ('lk.enabled', 'lk_greedy') needs the idt mode; set "
+                          "'idt.enabled' to true.")
+    if cfg["units"]["detect"] and not cfg["idt"]["enabled"]:
+        raise ConfigError("'units.detect' needs the idt mode; set 'idt.enabled' to true.")
+    if not (0.0 < float(cfg["units"]["share"]) < 1.0):
+        raise ConfigError("'units.share' must be in (0, 1).")
+    if not (0.0 < float(lk["sample_fraction"]) <= 1.0):
+        raise ConfigError("'lk.sample_fraction' must be in (0, 1].")
+    if lk["trajectories"] is not None:
+        bad = [m for m in lk["trajectories"] if isinstance(m, bool) or not isinstance(m, int) or m < 0]
+        if bad or not lk["trajectories"] or len(set(lk["trajectories"])) != len(lk["trajectories"]):
+            raise ConfigError("'lk.trajectories' must be null or a non-empty list of distinct trajectory "
+                              "indices (integers from 0).")
+    reserved = {"ranked_species.csv", "ranked_sp.npy", "importance.npy", "r_AB.npy", "summary.json",
+                "config_resolved.json", "lk_scores.npy"}         # reduction.ranking_file may name the LK order
+    stage_files = {"lk.output_file": lk["output_file"], "units.output_file": cfg["units"]["output_file"]}
+    for key, value in stage_files.items():
+        if not value.strip() or Path(value).name != value or value in reserved:
+            raise ConfigError(f"'{key}' must be a plain file name that no other stage writes (got '{value}').")
+    if lk["output_file"] == cfg["units"]["output_file"]:
+        raise ConfigError("'lk.output_file' and 'units.output_file' must differ.")
     if cfg["report"]["T_points"] < 2:
         raise ConfigError("'report.T_points' must be at least 2.")
     _check_solver_values(cfg)

@@ -8,6 +8,15 @@ Stages
 3. Ranking: select or blend the per-mode matrices, run the graph search,
    write ``r_AB.npy`` (input matrix of the graph search), ``importance.npy``,
    ``ranked_sp.npy`` (version 0.1 format) and ``ranked_species.csv``.
+4. Linearised knockout (``lk.enabled``, idt mode): one knockout per species
+   along the idt trajectories, write ``lk.output_file`` (the LK order) and
+   ``lk_scores.npy`` (:mod:`gasig.lk`).
+5. Chain units (``units.detect``, idt mode): write ``units.output_file``
+   (:mod:`gasig.units`).
+
+The stages 4 and 5 reuse the idt trajectories of stage 1. Run alone
+(``--stage lk`` or ``--stage units``), they load the precomputed files, or
+the trajectories that the solver saved in ``idt_data/``.
 
 Every run also writes ``summary.json`` and ``gasig.log`` into the output
 folder; the sensitivity stages also write ``config_resolved.json``. A
@@ -29,7 +38,8 @@ import torch
 
 from . import __version__
 from .aggregate import aggregate
-from .config import ConfigError, load_config, public_config
+from .config import load_config, public_config
+from .errors import ConfigError, InputError, MissingInputError, failure_counts
 from .graph import combine_matrices, overall_importance, rank_species, resolve_targets
 from .io import load_fs_precomputed, load_idt_precomputed, save_fs_data, save_idt_data
 from .kinetics import TorchKinetics
@@ -39,6 +49,8 @@ from .solvers.flame import run_flame_set
 from .solvers.idt import run_idt_set
 
 log = logging.getLogger("gasig")
+
+STAGES = ("all", "sensitivity", "rank", "lk", "units")
 
 
 def resolve_device(name: str) -> torch.device:
@@ -95,12 +107,38 @@ def collect_trajectories(mode: str, cfg: dict, out_dir: Path) -> list[Trajectory
     return load_fs_precomputed(mcfg["precomputed"], mcfg["flame_tip_T_fraction"])
 
 
-def run_mode(mode: str, cfg: dict, kin: TorchKinetics, out_dir: Path) -> dict:
-    """Data, sensitivity integration and aggregation for one mode."""
+def idt_trajectories(cfg: dict, out_dir: Path) -> list[Trajectory]:
+    """The idt trajectories of an earlier sensitivity stage, for a later stage run alone."""
+    idt = cfg["idt"]
+    if idt["source"] == "precomputed":
+        return load_idt_precomputed(idt["precomputed"])
+    folder = out_dir / "idt_data"
+    files = {"time": "time_all.npy", "T": "T_all.npy", "P": "P_all.npy", "Y": "Y_all.npy", "index": "index_all.npy"}
+    if not all((folder / f).is_file() for f in files.values()):
+        raise MissingInputError(f"{folder} holds no saved idt trajectories; run the sensitivity stage with "
+                                "'idt.solver.save_trajectories' true first.", path=str(folder))
+    trajs = load_idt_precomputed({k: str(folder / f) for k, f in files.items()})
+    record_path = out_dir / "trajectories_idt.json"
+    if record_path.is_file():                           # idt_data/ of an older run does not match the last run
+        records = json.loads(record_path.read_text(encoding="utf-8"))
+        same = len(records) == len(trajs) and all(
+            int(r.get("end_index", -1)) == int(t.end_index) and int(r.get("n_points", -1)) == len(t.tau)
+            for r, t in zip(records, trajs))
+        if not same:
+            raise InputError(f"{folder} does not hold the trajectories of the last sensitivity stage "
+                             f"({record_path}); run the sensitivity stage again with "
+                             "'idt.solver.save_trajectories' true.", path=str(folder))
+    return trajs
+
+
+def run_mode(mode: str, cfg: dict, kin: TorchKinetics, out_dir: Path, keep: dict | None = None) -> dict:
+    """Data, sensitivity integration and aggregation for one mode; ``keep[mode]`` gets the trajectories."""
     t0 = time.perf_counter()
     scfg = cfg["sensitivity"]
     acfg = cfg["aggregation"]
     trajs = collect_trajectories(mode, cfg, out_dir)
+    if keep is not None:
+        keep[mode] = trajs
     log.info("[%s] integrating %d trajectories on %s (rate_law=%s, substep_tol=%s)",
              mode, len(trajs), kin.device, kin.rate_law, scfg["substep_tol"])
 
@@ -166,11 +204,13 @@ def rank(cfg: dict, species_names: list[str], out_dir: Path) -> dict:
     for mode in _modes_for_ranking(cfg):
         path = out_dir / f"r_AB_{mode}.npy"
         if not path.is_file():
-            raise FileNotFoundError(f"{path} is missing; run the sensitivity stage for mode '{mode}' first.")
+            raise MissingInputError(f"{path} is missing; run the sensitivity stage for mode '{mode}' first.",
+                                    stage="rank", path=str(path))
         matrices[mode] = np.load(path)
     R, used = combine_matrices(matrices.get("idt"), matrices.get("fs"), rcfg["combine"], rcfg["hybrid_weight_idt"])
     if R.shape != (len(species_names), len(species_names)):
-        raise ValueError(f"r_AB has shape {R.shape} but the mechanism has {len(species_names)} species.")
+        raise InputError(f"r_AB has shape {R.shape} but the mechanism has {len(species_names)} species.",
+                         stage="rank", shape=list(R.shape), n_species=len(species_names))
 
     targets = resolve_targets(species_names, rcfg["target_species"])
     if not targets:
@@ -221,9 +261,9 @@ def _previous_summary(out_dir: Path) -> dict:
 
 
 def run(config_path: str | Path, device: str | None = None, stage: str = "all") -> dict:
-    """Run the stages of a configuration. ``stage`` is 'all', 'sensitivity' or 'rank'."""
-    if stage not in ("all", "sensitivity", "rank"):
-        raise ValueError("stage must be 'all', 'sensitivity' or 'rank'.")
+    """Run the stages of a configuration. ``stage`` is one of :data:`STAGES`."""
+    if stage not in STAGES:
+        raise ValueError(f"stage must be one of {STAGES}.")
     t0 = time.perf_counter()
     ct.suppress_thermo_warnings()
     config_path = Path(config_path)
@@ -244,7 +284,12 @@ def run(config_path: str | Path, device: str | None = None, stage: str = "all") 
 
 def _run_stages(cfg: dict, config_path: Path, out_dir: Path, stage: str, t0: float) -> dict:
     log.info("GA-SiG %s | config %s | stage %s", __version__, config_path, stage)
-    previous = _previous_summary(out_dir) if stage == "rank" else {}
+    later = stage in ("lk", "units")
+    if stage == "lk" and not cfg["lk"]["enabled"]:
+        raise ConfigError("'--stage lk' needs 'lk.enabled' true.")
+    if stage == "units" and not cfg["units"]["detect"]:
+        raise ConfigError("'--stage units' needs 'units.detect' true.")
+    previous = _previous_summary(out_dir) if stage in ("rank", "lk", "units") else {}
     summary: dict = {
         "gasig_version": __version__,
         "config": str(config_path),
@@ -255,8 +300,11 @@ def _run_stages(cfg: dict, config_path: Path, out_dir: Path, stage: str, t0: flo
         "device": previous.get("device"),
         "mechanism": previous.get("mechanism"),
         "modes": previous.get("modes", {}),
-        "ranking": None,
+        "ranking": previous.get("ranking") if later else None,
+        "lk": previous.get("lk") if stage in ("rank", "units") else None,
+        "units": previous.get("units") if stage in ("rank", "lk") else None,
     }
+    trajectories: dict = {}
 
     if stage in ("all", "sensitivity"):
         with (out_dir / "config_resolved.json").open("w", encoding="utf-8") as fh:
@@ -279,7 +327,7 @@ def _run_stages(cfg: dict, config_path: Path, out_dir: Path, stage: str, t0: flo
                  kin.Ns, kin.Nr, kin.n_three_body, summary["mechanism"]["n_irreversible"])
         for mode in ("idt", "fs"):
             if cfg[mode]["enabled"]:
-                summary["modes"][mode] = run_mode(mode, cfg, kin, out_dir)
+                summary["modes"][mode] = run_mode(mode, cfg, kin, out_dir, keep=trajectories)
         species_names = kin.species_names
     else:
         gas = ct.Solution(cfg["mechanism"]) if cfg["phase"] is None else ct.Solution(cfg["mechanism"], cfg["phase"])
@@ -291,6 +339,20 @@ def _run_stages(cfg: dict, config_path: Path, out_dir: Path, stage: str, t0: flo
     if stage in ("all", "rank"):
         summary["ranking"] = rank(cfg, species_names, out_dir)
         summary["ranking"]["config_at_ranking"] = _json_ready(cfg["ranking"])
+
+    if stage in ("all", "lk") and cfg["lk"]["enabled"]:
+        from .lk import run_lk
+
+        if "idt" not in trajectories:
+            trajectories["idt"] = idt_trajectories(cfg, out_dir)
+        summary["lk"] = run_lk(cfg, out_dir, trajectories["idt"])
+    if stage in ("all", "units") and cfg["units"]["detect"]:
+        from .units import run_units
+
+        if "idt" not in trajectories:
+            trajectories["idt"] = idt_trajectories(cfg, out_dir)
+        summary["units"] = run_units(cfg, out_dir, trajectories["idt"])
+    summary["failures"] = failure_counts()
 
     summary["seconds"] = round(time.perf_counter() - t0, 2)
     with (out_dir / "summary.json").open("w", encoding="utf-8") as fh:

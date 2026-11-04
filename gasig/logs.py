@@ -10,12 +10,15 @@ import sys
 import traceback
 from pathlib import Path
 
+from .errors import close_failure_log, describe_exception, open_failure_log, record_failure
+
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 _PREVIOUS = "_gasig_previous_state"
 
 
 def teardown_logging() -> None:
     """Remove and close the handlers of :func:`setup_logging`; restore the logger state."""
+    close_failure_log()
     logger = logging.getLogger("gasig")
     for handler in list(logger.handlers):
         if getattr(handler, "_gasig", False):
@@ -33,9 +36,12 @@ def setup_logging(output_dir: Path, level: str, file_name: str = "gasig.log", mo
 
     ``mode`` is the file mode of the log file: ``"a"`` appends to an existing
     file (the sensitivity and the ranking stage share one ``gasig.log``),
-    ``"w"`` starts a new file.
+    ``"w"`` starts a new file. The failure file ``<stem>.failures.jsonl`` of
+    :mod:`gasig.errors` opens beside the log file with the same mode; it
+    holds one JSON line per recorded failure.
     """
     teardown_logging()
+    open_failure_log(Path(output_dir) / f"{Path(file_name).stem}.failures.jsonl", mode)
     logger = logging.getLogger("gasig")
     setattr(logger, _PREVIOUS, (logger.propagate, logger.level))
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
@@ -51,8 +57,17 @@ def setup_logging(output_dir: Path, level: str, file_name: str = "gasig.log", mo
 
 
 def log_failure(logger: logging.Logger, message: str) -> None:
-    """Record the current exception: one ERROR line everywhere, the traceback in the log file only."""
-    logger.error("%s: %s", message, sys.exc_info()[1])
+    """Record the current exception: one ERROR line everywhere, the traceback in the log file only.
+
+    The exception also goes to the failure file as a fatal failure, with its
+    category, its stage and its context.
+    """
+    exc = sys.exc_info()[1]
+    if exc is None:
+        logger.error("%s", message)
+        return
+    logger.error("%s (%s error): %s", message, describe_exception(exc)["category"], exc)
+    record_failure(exc, fatal=True, during=message)
     text = traceback.format_exc()
     for handler in logging.getLogger("gasig").handlers:
         if getattr(handler, "_gasig", False) and isinstance(handler, logging.FileHandler):

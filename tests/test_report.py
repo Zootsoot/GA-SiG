@@ -101,3 +101,58 @@ def test_report_cli_errors(tmp_path, mech_path, gas):
     cfg_path.write_text(json.dumps(base), encoding="utf-8")
     assert main(["report", str(cfg_path)]) == 3                      # old sweep file without the species order
     assert "Traceback" in (out / "report.log").read_text(encoding="utf-8")
+
+
+def test_report_of_a_mechanism_file_without_a_sweep(tmp_path, mech_path, gas):
+    """``gasig report --mechanism FILE`` compares the file with the detailed mechanism on the evaluation grid."""
+    from helpers_reduction import IDT, PROTECTED, TARGETS
+    from gasig.reduce import write_reduced_mechanism
+
+    out = tmp_path / "out"
+    out.mkdir()
+    removed = set([s for s in reversed(gas.species_names) if s not in PROTECTED][:50])
+    keep = [s for s in gas.species_names if s not in removed]
+    path = write_reduced_mechanism(gas, keep, tmp_path / "reduced_61sp.yaml")
+    cfg_path = tmp_path / "c.json"
+    cfg_path.write_text(json.dumps({"mechanism": mech_path, "output_dir": "out",
+                                    "idt": {"enabled": True, "solver": dict(IDT, end_time_s=0.02)},
+                                    "ranking": {"target_species": TARGETS}, "report": {"T_points": 3}}),
+                        encoding="utf-8")
+    assert main(["report", str(cfg_path), "--mechanism", str(path)]) == 0
+    report_dir = out / "report_reduced_61sp"
+    saved = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
+    assert saved["selected"] == {"n_species": 61, "n_reactions": ct.Solution(str(path)).n_reactions}
+    assert saved["n_species_full"] == 111 and saved["species_not_in_detailed"] == []
+    assert [round(e["T_K"]) for e in saved["idt"]] == [1350, 1500, 1650] and saved["flame_speed"] == []
+    assert all(e["error"] is not None and e["error"] < 0.05 for e in saved["idt"])
+    text = (report_dir / "report.md").read_text(encoding="utf-8")
+    assert "# Mechanism comparison: reduced_61sp.yaml" in text and "| Compared | `reduced_61sp.yaml` | 61 |" in text
+    assert "Table 2. Ignition delay time" in text and "The mean error over the 3 points" in text
+    assert (out / "report_reduced_61sp.log").is_file()
+    if HAS_MPL:
+        assert (report_dir / "idt_comparison.png").is_file()
+    assert main(["report", str(cfg_path), "--mechanism", str(tmp_path / "missing.yaml")]) == 2
+
+
+def test_report_after_a_greedy_sweep(tmp_path, mech_path, gas):
+    """The report rebuilds the selected size from the accepted removals, not from the rank order."""
+    from helpers_reduction import PROTECTED
+
+    out = tmp_path / "out"
+    out.mkdir()
+    spectators = [s for s in reversed(gas.species_names) if s not in PROTECTED and s != "CH3"][:2]
+    rest = [s for s in gas.species_names if s not in PROTECTED and s not in spectators and s != "CH3"]
+    write_rank(out, sorted(PROTECTED) + [spectators[0], "CH3", spectators[1]] + rest)
+    cfg = make_config(tmp_path, mech_path, reduction={"min_species": 109, "error_tolerance": 0.05,
+                                                      "search": {"mode": "greedy"}},
+                      report={"T_points": 3}, end_time_s=0.02)
+    sweep(cfg, out)
+    data = json.loads((out / "reduction_sweep.json").read_text(encoding="utf-8"))
+    result = build_report(cfg, out, data)
+    assert result["selected"]["n_species"] == 109 and result["search_mode"] == "greedy"
+    assert result["selected"]["max_idt_error"] is not None and result["selected"]["max_idt_error"] < 0.01
+    assert "CH3" in result["species"] and not set(spectators) & set(result["species"])
+    assert result["mechanism_file"] == data["selection"]["mechanism_file"]
+    assert all(point["error"] < 0.01 for point in result["idt"])
+    text = (out / "report" / "report.md").read_text(encoding="utf-8")
+    assert "kept back" in text

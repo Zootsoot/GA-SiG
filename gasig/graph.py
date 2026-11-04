@@ -14,6 +14,8 @@ import logging
 
 import numpy as np
 
+from .errors import ConfigError, InputError
+
 log = logging.getLogger(__name__)
 
 
@@ -21,7 +23,7 @@ def build_adjacency(R: np.ndarray, eps_edge: float = 1e-16) -> list[list[tuple[i
     """Adjacency lists ``adj[a] = [(b, w_ab), ...]`` for every edge with ``R[a, b] > eps_edge``."""
     R = np.asarray(R, dtype=float)
     if R.ndim != 2 or R.shape[0] != R.shape[1]:
-        raise ValueError(f"R must be square, got shape {R.shape}.")
+        raise InputError(f"R must be square, got shape {R.shape}.", shape=list(R.shape))
     if np.any(R > 1.0 + 1e-12):
         log.warning("r_AB has %d entries above 1; they are clipped to 1 so that all edge lengths stay non-negative.",
                     int(np.sum(R > 1.0 + 1e-12)))
@@ -79,25 +81,28 @@ def combine_matrices(
         if r is not None:
             r = np.asarray(r)
             if r.ndim != 2 or r.shape[0] != r.shape[1]:
-                raise ValueError(f"{name} must be a square matrix, got shape {r.shape}.")
+                raise InputError(f"{name} must be a square matrix, got shape {r.shape}.", matrix=name,
+                                 shape=list(r.shape))
     if r_idt is not None and r_fs is not None and np.shape(r_idt) != np.shape(r_fs):
-        raise ValueError(f"r_AB_idt has shape {np.shape(r_idt)} but r_AB_fs has shape {np.shape(r_fs)}; "
-                         "both modes must come from the same mechanism.")
+        raise InputError(f"r_AB_idt has shape {np.shape(r_idt)} but r_AB_fs has shape {np.shape(r_fs)}; "
+                         "both modes must come from the same mechanism.",
+                         shape_idt=list(np.shape(r_idt)), shape_fs=list(np.shape(r_fs)))
     have_idt = r_idt is not None
     have_fs = r_fs is not None
     if combine == "auto":
         combine = "hybrid" if (have_idt and have_fs) else ("idt" if have_idt else "fs")
     if combine == "idt":
         if not have_idt:
-            raise ValueError("ranking.combine is 'idt' but no IDT matrix is available.")
+            raise ConfigError("ranking.combine is 'idt' but no IDT matrix is available.", combine="idt")
         return np.asarray(r_idt, dtype=float), "idt"
     if combine == "fs":
         if not have_fs:
-            raise ValueError("ranking.combine is 'fs' but no FS matrix is available.")
+            raise ConfigError("ranking.combine is 'fs' but no FS matrix is available.", combine="fs")
         return np.asarray(r_fs, dtype=float), "fs"
     if combine == "hybrid":
         if not (have_idt and have_fs):
-            raise ValueError("ranking.combine is 'hybrid' but both matrices are needed.")
+            raise ConfigError("ranking.combine is 'hybrid' but both matrices are needed.", combine="hybrid",
+                              have_idt=have_idt, have_fs=have_fs)
         w = float(weight_idt)
         return w * np.asarray(r_idt, dtype=float) + (1.0 - w) * np.asarray(r_fs, dtype=float), "hybrid"
     raise ValueError(f"Unknown combine mode {combine!r}.")

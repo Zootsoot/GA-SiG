@@ -14,7 +14,8 @@ ct = pytest.importorskip("cantera")
 import gasig  # noqa: E402
 from helpers_reduction import IDT, PROTECTED, TARGETS, make_config, rank_order, write_rank  # noqa: E402
 from gasig.cli import main  # noqa: E402
-from gasig.config import ConfigError  # noqa: E402
+from gasig.config import ConfigError, validate_config  # noqa: E402
+from gasig.errors import IgnitionSolverError, InputError, MechanismError, MissingInputError  # noqa: E402
 from gasig.logs import setup_logging, teardown_logging  # noqa: E402
 from gasig.reduce import (_json_safe, _relative_errors, keep_list, read_importance, read_rank,  # noqa: E402
                           reduced_solution, run_reduce, sweep)
@@ -335,13 +336,61 @@ def test_solver_failure_counts_as_a_failed_condition(tmp_path, mech_path, out, m
     with (out / "reduction_sweep.csv").open(encoding="utf-8", newline="") as fh:
         csv_rows = list(csv.DictReader(fh))
     assert csv_rows[1]["n_solver_failures"] == "1" and csv_rows[1]["max_idt_error"] == "inf"
+    assert summary["failures"] == {"ignition solver": 1}
+    data = json.loads((out / "reduction_sweep.json").read_text(encoding="utf-8"))
+    assert data["failures"] == {"ignition solver": 1}
 
     def broken_reference(*args, **kwargs):
         raise ct.CanteraError("boom")
 
+    # A failure of the detailed mechanism is fatal; the error names the condition and keeps the Cantera cause.
     monkeypatch.setattr(module, "run_idt", broken_reference)
-    with pytest.raises(ct.CanteraError):
+    with pytest.raises(IgnitionSolverError, match="integrator failed at T0=1500 K") as info:
         sweep(cfg, out)
+    assert isinstance(info.value.__cause__, ct.CanteraError)
+    assert info.value.stage == "reduce" and info.value.context["label"] == "full-c0"
+
+
+def test_run_reduce_records_solver_failures_in_the_failure_file(tmp_path, mech_path, gas, out, monkeypatch):
+    import gasig.reduce as module
+
+    real_run_idt = module.run_idt
+
+    def flaky(mech_file, phase_name, T0, P0, phi, solver_cfg, label="", gas=None):
+        if label.startswith("n61"):
+            raise ct.CanteraError("CVodes error encountered. Error code: -4")
+        return real_run_idt(mech_file, phase_name, T0, P0, phi, solver_cfg, label=label, gas=gas)
+
+    monkeypatch.setattr(module, "run_idt", flaky)
+    cfg_path = tmp_path / "c.json"
+    cfg_path.write_text(json.dumps({
+        "mechanism": mech_path, "output_dir": "out", "idt": {"enabled": True, "solver": dict(IDT)},
+        "ranking": {"target_species": TARGETS}, "reduction": {"step": 50, "min_species": 61}}), encoding="utf-8")
+    run_reduce(cfg_path)
+    lines = [json.loads(x) for x in (out / "reduce.failures.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 1
+    entry = lines[0]
+    assert entry["category"] == "ignition solver" and entry["stage"] == "reduce" and entry["fatal"] is False
+    assert entry["context"]["label"] == "n61-c0" and entry["context"]["n_species"] == 61
+    assert entry["context"]["T0_K"] == 1500.0 and "CVodes" in entry["message"]
+
+
+def test_a_reduced_mechanism_that_cannot_be_built_counts_as_failed(tmp_path, mech_path, gas, out, monkeypatch):
+    import gasig.reduce as module
+
+    real = module.reduced_solution
+
+    def fragile(gas_full, keep, transport_model=None):
+        if len(keep) == 61:
+            raise ct.CanteraError("a broken reaction")
+        return real(gas_full, keep, transport_model)
+
+    monkeypatch.setattr(module, "reduced_solution", fragile)
+    cfg = make_config(tmp_path, mech_path, reduction={"step": 50, "min_species": 11, "error_tolerance": 0.05})
+    summary = sweep(cfg, out)
+    row = summary["rows"][1]
+    assert row["n_species"] == 61 and row["build_failed"] is True and row["max_idt_error"] == float("inf")
+    assert row["complete"] is False and summary["failures"] == {"mechanism": 1}
 
 
 def test_json_is_written_after_every_size(tmp_path, mech_path, out, monkeypatch):
@@ -404,3 +453,200 @@ def test_reduce_imports_without_torch():
     env = dict(os.environ, PYTHONPATH=str(root) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, cwd=str(root))
     assert result.returncode == 0 and "torch-free ok" in result.stdout, result.stderr
+
+
+def test_greedy_mode_keeps_the_breaker_and_continues(tmp_path, mech_path, gas, out):
+    """CH3 cannot leave a methane mechanism: the greedy pass keeps it and removes the harmless species around it."""
+    spectators = [s for s in reversed(gas.species_names) if s not in PROTECTED and s != "CH3"][:2]
+    rest = [s for s in gas.species_names if s not in PROTECTED and s not in spectators and s != "CH3"]
+    write_rank(out, sorted(PROTECTED) + [spectators[0], "CH3", spectators[1]] + rest)
+    cfg = make_config(tmp_path, mech_path, reduction={"min_species": 109, "error_tolerance": 0.05,
+                                                      "search": {"mode": "greedy"}})
+    summary = sweep(cfg, out)
+    rows = summary["rows"]
+    assert [r["n_species"] for r in rows] == [111, 110, 109, 109]
+    assert [r.get("kept_back") for r in rows] == [None, False, True, False]
+    assert [r["removed_in_step"] for r in rows[1:]] == [spectators[0], "CH3", spectators[1]]
+    assert rows[2]["max_idt_error"] > 0.05
+    assert rows[1]["max_idt_error"] < 0.01 and rows[3]["max_idt_error"] < 0.01
+    assert summary["removal_order"] == spectators and summary["kept_back_species"] == ["CH3"]
+    assert summary["rank_removal_order"][:3] == [spectators[0], "CH3", spectators[1]]
+    search = summary["search"]
+    assert search["mode"] == "greedy" and search["early_exit"] is True and search["evaluations"] == 3
+    assert search["accepted"] == 2 and search["kept_back"] == 1 and search["budget_exhausted"] is False
+    assert search["robust_window_applies"] is False and search["unresolved"] == []
+    sel = summary["selection"]
+    assert (sel["strict_optimum"], sel["robust_optimum"], sel["selected"]) == (109, 109, 109)
+    assert summary["smallest_mechanism_within"] == {"5%": 109, "10%": 109, "20%": 109}
+    reloaded = ct.Solution(sel["mechanism_file"])
+    assert reloaded.n_species == 109 and "CH3" in reloaded.species_names
+    assert not set(spectators) & set(reloaded.species_names)
+    with (out / "reduction_sweep.csv").open(encoding="utf-8", newline="") as fh:
+        csv_rows = list(csv.DictReader(fh))
+    assert [r["kept_back"] for r in csv_rows] == ["", "False", "True", "False"]
+    assert csv_rows[2]["removed_in_step"] == "CH3"
+    data = json.loads((out / "reduction_sweep.json").read_text(encoding="utf-8"))
+    assert data["removal_order"] == spectators and data["kept_back_species"] == ["CH3"]
+
+
+def test_greedy_mode_needs_a_tolerance(tmp_path, mech_path):
+    with pytest.raises(ConfigError, match="greedy needs"):
+        make_config(tmp_path, mech_path, reduction={"search": {"mode": "greedy"}})
+
+
+def _breaker_rank(gas, out):
+    """A rank with two harmless heavy species around CH3; returns the two harmless species."""
+    spectators = [s for s in reversed(gas.species_names) if s not in PROTECTED and s != "CH3"][:2]
+    rest = [s for s in gas.species_names if s not in PROTECTED and s not in spectators and s != "CH3"]
+    write_rank(out, sorted(PROTECTED) + [spectators[0], "CH3", spectators[1]] + rest)
+    return spectators
+
+
+def test_greedy_budget_stops_the_pass(tmp_path, mech_path, gas, out, caplog):
+    spectators = _breaker_rank(gas, out)
+    cfg = make_config(tmp_path, mech_path, reduction={"min_species": 100, "error_tolerance": 0.05,
+                                                      "search": {"mode": "greedy", "max_evaluations": 1}})
+    with caplog.at_level(logging.WARNING, logger="gasig.reduce"):
+        summary = sweep(cfg, out)
+    assert [r["n_species"] for r in summary["rows"]] == [111, 110]
+    search = summary["search"]
+    assert search["budget_exhausted"] is True and search["evaluations"] == 1
+    assert search["params"] == {"max_evaluations": 1}
+    assert "evaluation budget of 1" in caplog.text
+    assert summary["selection"]["selected"] == 110 and summary["removal_order"] == spectators[:1]
+
+
+def test_greedy_skips_the_flames_of_a_kept_back_test(tmp_path, mech_path, gas, out, monkeypatch):
+    """The verdict comes before the flames, so a kept-back test costs no flame solve."""
+    import gasig.reduce as module
+
+    calls = []
+
+    def fake_fs(gas_red, conditions, fs_cfg, label, on_failure="inf"):
+        calls.append(label)
+        return [0.4] * len(conditions)
+
+    monkeypatch.setattr(module, "_fs_values", fake_fs)
+    spectators = _breaker_rank(gas, out)
+    cfg = make_config(tmp_path, mech_path, reduction={
+        "min_species": 109, "error_tolerance": 0.05, "evaluate_fs": True, "search": {"mode": "greedy"},
+        "fs": {"fuel": {"H2": 1.0}, "oxidizer": {"O2": 0.21, "N2": 0.79}, "P_atm": [1.0], "phi": [1.0]}})
+    summary = sweep(cfg, out)
+    rows = summary["rows"]
+    assert calls == ["full", f"g110-{spectators[0]}", f"g109-{spectators[1]}"]
+    assert rows[2]["kept_back"] is True and rows[2]["max_fs_error"] is None
+    assert rows[1]["max_fs_error"] == 0.0 and rows[3]["max_fs_error"] == 0.0
+
+
+# ----------------------------------------------------------------------------- lk_greedy mode
+
+# Single-removal IDT errors at 1500 K, 1 atm, phi 1 (USC Mech II): the four aromatics are at the solver noise
+# (below 2e-5), C2H3 gives 1.85 %, CH3 stops the ignition.
+LKG_SPECIES = ["C6H5CHO", "C6H5CH2", "C2H3", "CH3", "HOC6H4CH3", "C6H5O"]
+LKG_SCORES = {"C6H5CHO": 0.0, "C6H5CH2": 0.001, "C2H3": 0.01, "CH3": 1.0, "HOC6H4CH3": 0.02, "C6H5O": 0.5}
+
+
+def write_lk_order(folder, gas, scores=LKG_SCORES):
+    """``lk_order.csv``: the scored species in their order, then every other species with score 1."""
+    order = list(scores) + [s for s in gas.species_names if s not in scores]
+    with (folder / "lk_order.csv").open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["rank_from_least_important", "species", "importance", "gasig_importance"])
+        for i, s in enumerate(order, start=1):
+            writer.writerow([i, s, scores.get(s, 1.0), 0.0])
+
+
+def lkg_config(tmp_path, mech_path, gas, units=(("C6H5O", "HOC6H4CH3"),), **search):
+    keep = [s for s in gas.species_names if s not in LKG_SPECIES]
+    return make_config(tmp_path, mech_path, reduction={
+        "error_tolerance": 0.01, "keep_species": keep,
+        "search": {"mode": "lk_greedy", "pass2_tolerance": 0.05,
+                   "units": None if units is None else [list(u) for u in units], **search}})
+
+
+def test_lk_greedy_mode_blocks_units_and_second_pass(tmp_path, mech_path, gas, out):
+    write_lk_order(out, gas)
+    summary = sweep(lkg_config(tmp_path, mech_path, gas), out)
+    rows = summary["rows"]
+    assert [r["n_species"] for r in rows] == [111, 109, 108, 108, 107, 106, 105]
+    assert [r.get("kept_back") for r in rows] == [None, False, True, True, False, False, True]
+    assert [r.get("pass") for r in rows[1:]] == [1, 1, 1, 1, 2, 2]
+    assert [r.get("test") for r in rows[1:]] == ["block", "single", "single", "unit", "single", "single"]
+    assert [r["removed_in_step"] for r in rows[1:]] == ["C6H5CHO;C6H5CH2", "C2H3", "CH3", "HOC6H4CH3;C6H5O",
+                                                       "C2H3", "CH3"]
+    assert 0.01 < rows[2]["max_idt_error"] < 0.05 and rows[2]["tolerance"] == 0.01     # fails at 1 %
+    assert rows[5]["max_idt_error"] < 0.05 and rows[5]["tolerance"] == 0.05 and rows[5]["complete"] is True
+    assert summary["removal_order"] == ["C6H5CHO", "C6H5CH2", "HOC6H4CH3", "C6H5O", "C2H3"]
+    assert summary["kept_back_species"] == ["CH3"]
+    search = summary["search"]
+    assert search["mode"] == "lk_greedy" and search["early_exit"] is True and search["evaluations"] == 6
+    assert search["tier0_size"] == 2 and search["units"] == [["C6H5O", "HOC6H4CH3"]]
+    assert search["units_source"] == "reduction.search.units" and search["budget_exhausted"] is False
+    p1, p2 = search["passes"]
+    assert (p1["n_species"], p1["accepted"], p1["kept_pieces"]) == (107, 4, [["C2H3"], ["CH3"]])
+    assert (p2["n_species"], p2["accepted"], p2["kept_pieces"], p2["tolerance"]) == (106, 1, [["CH3"]], 0.05)
+    sel = summary["selection"]
+    assert (sel["strict_optimum"], sel["robust_optimum"], sel["selected"]) == (107, 107, 107)
+    first = ct.Solution(sel["mechanism_file"])
+    second = ct.Solution(p2["mechanism_file"])
+    assert first.n_species == 107 and "C2H3" in first.species_names and "C6H5O" not in first.species_names
+    assert second.n_species == 106 and "C2H3" not in second.species_names and "CH3" in second.species_names
+    with (out / "reduction_sweep.csv").open(encoding="utf-8", newline="") as fh:
+        csv_rows = list(csv.DictReader(fh))
+    assert csv_rows[1]["removed_in_step"] == "C6H5CHO;C6H5CH2" and csv_rows[3]["kept_back"] == "True"
+    data = json.loads((out / "reduction_sweep.json").read_text(encoding="utf-8"))
+    assert data["search"]["passes"][1]["mechanism_file"] == p2["mechanism_file"]
+    assert data["rank_removal_order"] == LKG_SPECIES
+    # A budget that ends with pass 1 runs no second pass and keeps the pass-1 failures in kept_back_species.
+    summary = sweep(lkg_config(tmp_path, mech_path, gas, max_evaluations=4), out)
+    assert summary["search"]["budget_exhausted"] is True and len(summary["search"]["passes"]) == 1
+    assert summary["kept_back_species"] == ["C2H3", "CH3"] and summary["search"]["evaluations"] == 4
+
+
+def test_lk_greedy_reads_the_detected_units_and_checks_its_inputs(tmp_path, mech_path, gas, out, caplog):
+    cfg = lkg_config(tmp_path, mech_path, gas, units=None, max_evaluations=1)
+    with pytest.raises(MissingInputError, match="lk_order.csv is missing"):
+        sweep(cfg, out)
+    write_lk_order(out, gas)
+    with caplog.at_level(logging.WARNING, logger="gasig.reduce"):
+        summary = sweep(cfg, out)
+    assert summary["search"]["units_source"] == "none" and "no chain units" in caplog.text
+    (out / "chain_units.json").write_text(json.dumps({"units": [["C6H5O", "HOC6H4CH3"], ["CH4", "C2H3"]]}),
+                                          encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="gasig.reduce"):
+        summary = sweep(cfg, out)
+    assert summary["search"]["units"] == [["C6H5O", "HOC6H4CH3"]]          # the unit with protected CH4 is dropped
+    assert summary["search"]["units_source"].endswith("chain_units.json") and "protected member" in caplog.text
+    assert summary["search"]["budget_exhausted"] is True and len(summary["search"]["passes"]) == 1
+    (out / "chain_units.json").write_text(json.dumps({"units": [["NOPE", "C2H3"]]}), encoding="utf-8")
+    with pytest.raises(MechanismError, match="NOPE"):
+        sweep(cfg, out)
+    for bad, match in (({"units": ["C2H3"]}, "non-empty lists"), ({"units": [["C2H3", "C2H3"]]}, "more than one"),
+                       ({"units": [["C2H3", "CH3"], ["CH3", "C6H5O"]]}, "more than one")):
+        (out / "chain_units.json").write_text(json.dumps(bad), encoding="utf-8")
+        with pytest.raises(InputError, match=match):
+            sweep(cfg, out)
+    with (out / "lk_order.csv").open("w", newline="", encoding="utf-8") as fh:
+        csv.writer(fh).writerows([["species"]] + [[s] for s in gas.species_names])
+    with pytest.raises(InputError, match="LK scores"):
+        sweep(lkg_config(tmp_path, mech_path, gas), out)
+
+
+def test_lk_greedy_config_checks(tmp_path, mech_path):
+    with pytest.raises(ConfigError, match="lk_greedy needs"):
+        make_config(tmp_path, mech_path, reduction={"search": {"mode": "lk_greedy"}})
+    with pytest.raises(ConfigError, match="pass2_tolerance"):
+        make_config(tmp_path, mech_path, reduction={"error_tolerance": 0.1, "search": {"pass2_tolerance": 0.05}})
+    with pytest.raises(ConfigError, match="more than one place"):
+        make_config(tmp_path, mech_path, reduction={"search": {"units": [["A", "B"], ["B", "C"]]}})
+    with pytest.raises(ConfigError, match="non-empty lists"):
+        make_config(tmp_path, mech_path, reduction={"search": {"units": [[]]}})
+    with pytest.raises(ConfigError, match="block_size"):
+        make_config(tmp_path, mech_path, reduction={"search": {"block_size": 0}})
+    for extra in ({"lk": {"output_file": "ranked_species.csv"}}, {"units": {"output_file": "sub/units.json"}},
+                  {"lk": {"output_file": "x.csv"}, "units": {"output_file": "x.csv"}}, {"lk": {"output_file": " "}}):
+        with pytest.raises(ConfigError, match="output_file"):
+            validate_config({"mechanism": mech_path, "idt": {"enabled": True, "solver": dict(IDT)}, **extra}, tmp_path)
+    # The plain greedy mode may walk the LK order.
+    make_config(tmp_path, mech_path, reduction={"ranking_file": "lk_order.csv", "error_tolerance": 0.1,
+                                                "search": {"mode": "greedy"}})

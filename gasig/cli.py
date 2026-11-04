@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import ConfigError, template_config
+from .config import template_config
+from .errors import ConfigError, GasigError, exit_code
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -36,7 +37,7 @@ def _cmd_reduce(args: argparse.Namespace) -> int:
 def _cmd_report(args: argparse.Namespace) -> int:
     from .report import run_report
 
-    run_report(args.config)
+    run_report(args.config, mechanism=args.mechanism)
     return 0
 
 
@@ -90,8 +91,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="Run the sensitivity integration and the ranking from a JSON configuration.")
     p_run.add_argument("config", help="Path of the JSON configuration file.")
     p_run.add_argument("--device", default=None, help="Override the 'device' key: auto, cpu, cuda, cuda:N.")
-    p_run.add_argument("--stage", choices=["all", "sensitivity", "rank"], default="all",
-                       help="Run every stage (default), only the sensitivity stage, or only the ranking.")
+    p_run.add_argument("--stage", choices=["all", "sensitivity", "rank", "lk", "units"], default="all",
+                       help="Run every stage (default), or only one: the sensitivity, the ranking, the linearised "
+                            "knockout (lk) or the chain-unit detection (units).")
     p_run.set_defaults(func=_cmd_run)
 
     p_rank = sub.add_parser("rank", help="Rank species again from the r_AB files of an earlier run.")
@@ -105,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_rep = sub.add_parser("report", help="Compare the selected reduced mechanism with the detailed one: tables and figures.")
     p_rep.add_argument("config", help="Path of the JSON configuration file of the run with a reduction sweep.")
+    p_rep.add_argument("--mechanism", default=None, metavar="FILE",
+                       help="Compare this Cantera YAML mechanism with the detailed one on the evaluation conditions, "
+                            "without a sweep. FILE is relative to the current folder, else to the output folder, "
+                            "else to the configuration file. The report goes to 'report_<name>/' in the output "
+                            "folder.")
     p_rep.set_defaults(func=_cmd_report)
 
     p_tpl = sub.add_parser("template", help="Print a configuration template with every default.")
@@ -133,7 +140,19 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.func(args))
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
-        return 2
+        return exc.exit_code
+    except GasigError as exc:
+        if os.environ.get("GASIG_DEBUG"):
+            raise
+        info = exc.describe()
+        where = f" in the {exc.stage} stage" if exc.stage else ""
+        print(f"{info['category'].capitalize()} error{where}: {str(exc).strip()}", file=sys.stderr)
+        if exc.context:
+            print("Context: " + ", ".join(f"{k}={v}" for k, v in info["context"].items()), file=sys.stderr)
+        if exc.exit_code != 2:
+            print("Set GASIG_DEBUG=1 for the full traceback. The failure file (*.failures.jsonl) in the "
+                  "output folder records the error.", file=sys.stderr)
+        return exc.exit_code
     except FileNotFoundError as exc:
         print(f"File not found: {exc}", file=sys.stderr)
         return 2
@@ -142,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             raise
         print(f"Error: {str(exc).strip()}", file=sys.stderr)
         print("Set GASIG_DEBUG=1 for the full traceback.", file=sys.stderr)
-        return 3
+        return exit_code(exc)
 
 
 if __name__ == "__main__":  # pragma: no cover

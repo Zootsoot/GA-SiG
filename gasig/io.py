@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .errors import InputError, MissingInputError
 from .trajectory import Trajectory, flame_tip_index, residence_time
 
 log = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def load_dict_npy(path: str | Path) -> dict[int, np.ndarray]:
     """Load a ``.npy`` file that holds ``{int: array}`` and return it keyed ``0..N-1``."""
     path = Path(path)
     if not path.is_file():
-        raise FileNotFoundError(f"Data file not found: {path}")
+        raise MissingInputError(f"Data file not found: {path}", path=str(path))
     arr = np.load(path, allow_pickle=True)
     obj = arr.item() if (arr.dtype == object and arr.shape == ()) else arr
     if isinstance(obj, dict):
@@ -39,33 +40,35 @@ def load_dict_npy(path: str | Path) -> dict[int, np.ndarray]:
     elif isinstance(obj, (list, tuple)) or (isinstance(obj, np.ndarray) and obj.dtype == object):
         items = {i: v for i, v in enumerate(obj)}
     else:
-        raise ValueError(f"{path}: expected a dictionary {{trajectory: array}}, got {type(obj).__name__}.")
+        raise InputError(f"{path}: expected a dictionary {{trajectory: array}}, got {type(obj).__name__}.",
+                         path=str(path))
     out: dict[int, np.ndarray] = {}
     for key, value in items.items():
         out[int(key)] = np.asarray(value, dtype=float)
     expected = list(range(len(out)))
     if sorted(out) != expected:
-        raise ValueError(f"{path}: dictionary keys must be 0..{len(out) - 1}, got {sorted(out)[:10]}...")
+        raise InputError(f"{path}: dictionary keys must be 0..{len(out) - 1}, got {sorted(out)[:10]}...",
+                         path=str(path))
     return out
 
 
 def load_index_npy(path: str | Path) -> np.ndarray:
     path = Path(path)
     if not path.is_file():
-        raise FileNotFoundError(f"Index file not found: {path}")
+        raise MissingInputError(f"Index file not found: {path}", path=str(path))
     idx = np.asarray(np.load(path, allow_pickle=False)).reshape(-1)
     if not np.issubdtype(idx.dtype, np.integer):
         if np.all(np.mod(idx, 1) == 0):
             idx = idx.astype(int)
         else:
-            raise ValueError(f"{path}: the index array must hold integers.")
+            raise InputError(f"{path}: the index array must hold integers.", path=str(path))
     return idx.astype(int)
 
 
 def _check_same_keys(named: dict[str, dict[int, np.ndarray]]) -> int:
     lengths = {name: len(d) for name, d in named.items()}
     if len(set(lengths.values())) != 1:
-        raise ValueError(f"The data files hold different numbers of trajectories: {lengths}.")
+        raise InputError(f"The data files hold different numbers of trajectories: {lengths}.", lengths=lengths)
     return next(iter(lengths.values()))
 
 
@@ -78,13 +81,15 @@ def load_idt_precomputed(pre: dict) -> list[Trajectory]:
     n = _check_same_keys({"time": time_all, "T": T_all, "P": P_all, "Y": Y_all})
     idx = load_index_npy(pre["index"])
     if idx.shape[0] != n:
-        raise ValueError(f"The index file has {idx.shape[0]} entries but there are {n} trajectories.")
+        raise InputError(f"The index file has {idx.shape[0]} entries but there are {n} trajectories.",
+                         path=str(pre["index"]), n_index=int(idx.shape[0]), n_trajectories=n)
     trajs = []
     for m in range(n):
         end = int(idx[m])
         n_pts = int(time_all[m].shape[0])
         if not (0 <= end < n_pts):
-            raise ValueError(f"idt-{m}: end index {end} from {pre['index']} is outside [0, {n_pts - 1}].")
+            raise InputError(f"idt-{m}: end index {end} from {pre['index']} is outside [0, {n_pts - 1}].",
+                             label=f"idt-{m}", path=str(pre["index"]), end_index=end, n_points=n_pts)
         trajs.append(Trajectory(
             tau=time_all[m], T=T_all[m], P=P_all[m], Y=Y_all[m],
             end_index=end, label=f"idt-{m}",
@@ -104,7 +109,8 @@ def load_fs_precomputed(pre: dict, flame_tip_T_fraction: float | None) -> list[T
     n = _check_same_keys({"position": x_all, "velocity": u_all, "T": T_all, "P": P_all, "Y": Y_all})
     idx = load_index_npy(pre["index"]) if pre.get("index") else None
     if idx is not None and idx.shape[0] != n:
-        raise ValueError(f"The index file has {idx.shape[0]} entries but there are {n} profiles.")
+        raise InputError(f"The index file has {idx.shape[0]} entries but there are {n} profiles.",
+                         path=str(pre["index"]), n_index=int(idx.shape[0]), n_profiles=n)
     trajs = []
     for m in range(n):
         x, u, T = x_all[m], u_all[m], T_all[m]
@@ -115,12 +121,14 @@ def load_fs_precomputed(pre: dict, flame_tip_T_fraction: float | None) -> list[T
         if idx is not None:
             end = int(idx[m])
             if not (0 <= end < x.shape[0]):
-                raise ValueError(f"fs-{m}: end index {end} from {pre['index']} is outside [0, {x.shape[0] - 1}].")
+                raise InputError(f"fs-{m}: end index {end} from {pre['index']} is outside [0, {x.shape[0] - 1}].",
+                                 label=f"fs-{m}", path=str(pre["index"]), end_index=end,
+                                 n_points=int(x.shape[0]))
         else:
             try:
                 end = flame_tip_index(T, flame_tip_T_fraction)
             except ValueError as exc:
-                raise ValueError(f"fs-{m}: {exc}") from exc
+                raise InputError(f"fs-{m}: {exc}", label=f"fs-{m}") from exc
         trajs.append(Trajectory(
             tau=tau, T=T, P=P, Y=Y_all[m], end_index=end, label=f"fs-{m}",
             meta={"source": "precomputed", "x": x, "u": u, "flame_speed_m_s": float(u[0]),

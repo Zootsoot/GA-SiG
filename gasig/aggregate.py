@@ -22,6 +22,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .errors import InputError
+
 log = logging.getLogger(__name__)
 
 
@@ -30,7 +32,8 @@ def species_coupling(S: np.ndarray, nu_net: np.ndarray, abs_S: bool = True) -> n
     S = np.asarray(S, dtype=float)
     nu_net = np.asarray(nu_net, dtype=float)
     if S.shape != nu_net.shape:
-        raise ValueError(f"S has shape {S.shape} but nu_net has shape {nu_net.shape}.")
+        raise InputError(f"S has shape {S.shape} but nu_net has shape {nu_net.shape}.",
+                         shape_S=list(S.shape), shape_nu_net=list(nu_net.shape))
     participates = (nu_net != 0.0).astype(float)          # (Ns_b, Nr)
     base = np.abs(S) if abs_S else S
     return base @ participates.T                           # (Ns_a, Ns_b)
@@ -62,7 +65,7 @@ def aggregate(
 ) -> Aggregate:
     """Combine the sensitivity matrices of all trajectories into ``r_AB``."""
     if not S_list:
-        raise ValueError("No sensitivity matrices to aggregate.")
+        raise InputError("No sensitivity matrices to aggregate.")
     if normalization not in ("S_AB_row_sum", "S_row_sum"):
         raise ValueError("normalization must be 'S_AB_row_sum' or 'S_row_sum'.")
     S_abs_max = np.abs(np.asarray(S_list[0], dtype=float))

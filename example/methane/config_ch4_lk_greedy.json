@@ -1,0 +1,156 @@
+{
+  "mechanism": "../USCMechII.yaml",
+  "phase": null,
+  "device": "auto",
+  "dtype": "float64",
+  "output_dir": "results_ch4_lk_greedy",
+  "log_level": "info",
+  "sensitivity": {
+    "rate_law": "original",
+    "substep_tol": null,
+    "max_substeps": 64,
+    "concentration_floor": 1e-30,
+    "save_S": false,
+    "progress_every": 0,
+    "self_check": true
+  },
+  "idt": {
+    "enabled": true,
+    "source": "solver",
+    "solver": {
+      "fuel": {"CH4": 1.0},
+      "oxidizer": {"O2": 0.21, "N2": 0.79},
+      "T_K": [1200.0, 1400.0, 1600.0],
+      "P_atm": [1.0, 10.0],
+      "phi": [0.5, 1.0],
+      "reactor": "constant_volume",
+      "end_time_s": 0.05,
+      "reference_species": "OH",
+      "ignition_criterion": "reference_peak",
+      "rtol": 1e-06,
+      "atol": 1e-12,
+      "max_steps": 200000,
+      "preconditioner": "adaptive",
+      "skip_unignited": false,
+      "save_trajectories": true
+    },
+    "precomputed": {"time": null, "T": null, "P": null, "Y": null, "index": null}
+  },
+  "fs": {
+    "enabled": false,
+    "source": "solver",
+    "flame_tip_T_fraction": 0.99,
+    "solver": {
+      "fuel": {"CH4": 1.0},
+      "oxidizer": {"O2": 0.21, "N2": 0.79},
+      "T_unburnt_K": 300.0,
+      "P_atm": [1.0],
+      "phi": [0.8, 1.0, 1.2],
+      "domain_width_m": 0.03,
+      "transport_model": "mixture-averaged",
+      "backend": "cantera",
+      "zerork": {
+        "home": null,
+        "processes": null,
+        "mpiexec": "mpirun --oversubscribe",
+        "min_points_per_thickness": 12,
+        "rel_tol": 0.01,
+        "lewis_temperature_K": 1500.0,
+        "max_solves": 10,
+        "continuation": true,
+        "timeout_s": null,
+        "work_dir": null,
+        "keep_files": false
+      },
+      "refine": {"ratio": 3.0, "slope": 0.06, "curve": 0.12, "prune": 0.03},
+      "loglevel": 0,
+      "save_profiles": true
+    },
+    "precomputed": {
+      "position": null,
+      "velocity": null,
+      "T": null,
+      "P": null,
+      "Y": null,
+      "index": null
+    }
+  },
+  "aggregation": {
+    "abs_S": true,
+    "normalization": "S_AB_row_sum"
+  },
+  "reduction": {
+    "ranking_file": "ranked_species.csv",
+    "step": 1,
+    "min_species": 15,
+    "stop_error": null,
+    "keep_species": [],
+    "evaluate_fs": false,
+    "error_tolerance": 0.15,
+    "write_mechanism": true,
+    "search": {
+      "mode": "lk_greedy",
+      "early_exit": null,
+      "block_size": 16,
+      "tier0_score": 0.003,
+      "pass2_tolerance": 0.2,
+      "units": null,
+      "coarse_points": 16,
+      "importance_gap_probes": 5,
+      "near_miss_factor": 2.0,
+      "robust_window": 3,
+      "noise": 0.003,
+      "max_evaluations": null
+    },
+    "idt": {
+      "fuel": null,
+      "oxidizer": null,
+      "T_K": null,
+      "P_atm": null,
+      "phi": null,
+      "reactor": null,
+      "end_time_s": null,
+      "reference_species": null,
+      "ignition_criterion": null,
+      "rtol": null,
+      "atol": null,
+      "max_steps": null,
+      "preconditioner": null
+    },
+    "fs": {
+      "fuel": null,
+      "oxidizer": null,
+      "T_unburnt_K": null,
+      "P_atm": null,
+      "phi": null,
+      "domain_width_m": null,
+      "transport_model": null,
+      "loglevel": null,
+      "backend": null
+    }
+  },
+  "report": {
+    "T_points": 12,
+    "plots": true
+  },
+  "ranking": {
+    "target_species": ["CH4", "O2", "OH", "H2O", "HO2", "CO2"],
+    "combine": "idt",
+    "hybrid_weight_idt": 0.5,
+    "eps_edge": 1e-16,
+    "top_n_print": 15
+  },
+  "lk": {
+    "enabled": true,
+    "trajectories": null,
+    "sample_fraction": 0.5,
+    "rate_law": "corrected",
+    "output_file": "lk_order.csv"
+  },
+  "units": {
+    "detect": true,
+    "scope": "tail",
+    "share": 0.01,
+    "output_file": "chain_units.json"
+  }
+}

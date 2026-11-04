@@ -6,6 +6,10 @@ position, velocity, temperature, pressure and mass fractions is converted
 to residence time ``tau`` with ``dtau = dx / u`` and the sensitivity
 integration ends at the flame tip, the first grid point where the
 temperature reaches ``flame_tip_T_fraction`` of the maximum temperature.
+
+With ``fs.solver.backend: "zerork"`` the same function solves the flame
+with the Zero-RK premixed steady flame solver (:mod:`gasig.solvers.zerork`)
+and returns the same profile.
 """
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ import time
 import cantera as ct
 import numpy as np
 
+from ..errors import FlameSolverError  # noqa: F401  re-exported: gasig.solvers.flame.FlameSolverError
 from ..trajectory import Trajectory, flame_tip_index, residence_time
 
 log = logging.getLogger(__name__)
@@ -42,6 +47,10 @@ def run_flame(
     transport data), the flame uses that Solution and ``mech_file`` is not
     read. The flame object sets the state of the Solution.
     """
+    if solver_cfg.get("backend", "cantera") == "zerork":
+        from .zerork import run_flame_zerork
+
+        return run_flame_zerork(mech_file, phase_name, P, phi, solver_cfg, label=label, gas=gas)
     if gas is None:
         gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
     T_u = float(solver_cfg["T_unburnt_K"])
@@ -78,8 +87,12 @@ def run_flame(
 def run_flame_set(mech_file: str, phase_name: str | None, solver_cfg: dict) -> list[Trajectory]:
     """Run every condition of the fs solver block."""
     conditions = flame_conditions(solver_cfg)
-    log.info("fs solver: %d flames (T_u=%.0f K, width %.3f m, %s transport).",
-             len(conditions), solver_cfg["T_unburnt_K"], solver_cfg["domain_width_m"], solver_cfg["transport_model"])
+    if solver_cfg.get("backend", "cantera") == "zerork":
+        log.info("fs solver: %d flames (T_u=%.0f K, Zero-RK steady solver, constant Lewis numbers).",
+                 len(conditions), solver_cfg["T_unburnt_K"])
+    else:
+        log.info("fs solver: %d flames (T_u=%.0f K, width %.3f m, %s transport).", len(conditions),
+                 solver_cfg["T_unburnt_K"], solver_cfg["domain_width_m"], solver_cfg["transport_model"])
     gas = ct.Solution(mech_file) if phase_name is None else ct.Solution(mech_file, phase_name)
     trajs = []
     for m, (P, phi) in enumerate(conditions):
