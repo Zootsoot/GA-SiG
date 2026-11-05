@@ -1,5 +1,5 @@
 {
-  "mechanism": "USCMechII.yaml",
+  "mechanism": "../USCMechII.yaml",
   "device": "auto",
   "output_dir": "results_c2h4",
   "sensitivity": {
@@ -14,11 +14,11 @@
     "enabled": true,
     "source": "precomputed",
     "precomputed": {
-      "time": "c2h4_traj_all.npy",
-      "T": "c2h4_T_all.npy",
-      "P": "c2h4_P_all.npy",
-      "Y": "c2h4_Y_all.npy",
-      "index": "c2h4_index_all.npy"
+      "time": "../c2h4_traj_all.npy",
+      "T": "../c2h4_T_all.npy",
+      "P": "../c2h4_P_all.npy",
+      "Y": "../c2h4_Y_all.npy",
+      "index": "../c2h4_index_all.npy"
     }
   },
   "ranking": {

@@ -24,7 +24,7 @@ A reduction has three commands. `gasig run` makes the rank. `gasig reduce` measu
 | Cantera | 3.2.0 |
 | PyTorch | 2.8.0, CUDA 12.6 build |
 | Matplotlib | 3.7 or later, optional: the figures of `gasig report` |
-| GPU | optional: an NVIDIA GPU with a current driver |
+| GPU | optional: an NVIDIA GPU with a full double-precision rate; a consumer card is slower than the CPU |
 
 The Docker image contains all of these. The package accepts Python 3.10 to 3.12, NumPy 1.24 or later, Cantera 3.1 or 3.2 and PyTorch 2.1 or later. Without a GPU the package runs on the CPU. The commands `reduce`, `report` and `template` need Cantera and NumPy only; they run without PyTorch.
 
@@ -52,6 +52,12 @@ docker build -f Dockerfile.cpu -t ga-sig:cpu .
 ```
 
 Use `ga-sig:cpu` in place of `ga-sig` in every command that follows, without `--gpus all`.
+
+The CPU image also compiles the Zero-RK flame solvers (refer to the section Flame speeds with Zero-RK). To build the image without Zero-RK, add `--target gasig`:
+
+```bash
+docker build -f Dockerfile.cpu --target gasig -t ga-sig:cpu .
+```
 
 ### With pip
 
@@ -100,6 +106,7 @@ Table 1. Main configuration keys
 | `idt.solver.T_K`, `idt.solver.P_atm`, `idt.solver.phi` | lists | none | Initial conditions; the solver runs every combination |
 | `idt.solver.reactor` | string | `constant_volume` | `constant_volume` or `constant_pressure` |
 | `idt.solver.end_time_s` | number | `0.2` | Simulated time of each trajectory |
+| `idt.solver.preconditioner` | string | `adaptive` | `adaptive` (Cantera preconditioner, GMRES), `adaptive_fast` (third-body and falloff terms left out of the preconditioner), `none` (dense solver) |
 | `idt.solver.reference_species` | string | `OH` | Species whose mole-fraction peak marks ignition |
 | `idt.solver.ignition_criterion` | string | `reference_peak` | Peak of the reference species within the ignition event, or `max_dTdt` |
 | `idt.precomputed.*` | strings | none | Files `time`, `T`, `P`, `Y` and `index` |
@@ -109,7 +116,15 @@ Table 1. Main configuration keys
 | `fs.solver.fuel`, `fs.solver.oxidizer` | object | none | Mole-based compositions |
 | `fs.solver.T_unburnt_K`, `fs.solver.P_atm`, `fs.solver.phi` | number, lists | `300`, none, none | Flame conditions |
 | `fs.solver.domain_width_m` | number | `0.03` | Width of the flame domain |
-| `fs.solver.transport_model` | string | `mixture-averaged` | Cantera transport model |
+| `fs.solver.transport_model` | string | `mixture-averaged` | Cantera transport model; the `zerork` backend ignores it |
+| `fs.solver.backend` | string | `cantera` | `cantera` solves the `FreeFlame`; `zerork` runs the Zero-RK premixed steady flame solver. Refer to the section Flame speeds with Zero-RK |
+| `fs.solver.zerork.home` | string or null | `null` | Zero-RK install folder, relative to the configuration file; `null` uses `ZERORK_HOME`, then `/opt/zero-rk` |
+| `fs.solver.zerork.processes` | integer or null | `null` | MPI ranks per flame; `null` uses the available CPUs, at most 8 |
+| `fs.solver.zerork.min_points_per_thickness` | number | `12` | Grid points per flame thickness that end the regrid loop |
+| `fs.solver.zerork.rel_tol` | number | `1e-2` | Relative tolerance of the steady solver |
+| `fs.solver.zerork.work_dir`, `fs.solver.zerork.keep_files` | string or null, boolean | `null`, `false` | Folder for the solver files, relative to the configuration file: `run-<pid>/<flame>/` per process and flame, `mechanisms/` for the CHEMKIN files. `keep_files` keeps them and needs `work_dir` |
+| `fs.solver.zerork.continuation` | boolean | `true` | Start each flame from the nearest flame that the process solved before, of the same mechanism or of another one. The cold start runs if this start fails |
+| `fs.solver.zerork.mpiexec`, `fs.solver.zerork.lewis_temperature_K`, `fs.solver.zerork.max_solves`, `fs.solver.zerork.timeout_s` | various | `mpirun --oversubscribe`, `1500`, `10`, `null` | MPI launcher, temperature of the Lewis numbers, solver calls per flame, time limit per call. A call over the time limit counts as failed, and the next attempt runs |
 | `fs.precomputed.*` | strings | none | Files `position`, `velocity`, `T`, `P`, `Y` and optional `index` |
 | `ranking.target_species` | list | `[]` | Target species names |
 | `ranking.combine` | string | `auto` | `auto`, `idt`, `fs` or `hybrid` |
@@ -123,24 +138,25 @@ Table 1. Main configuration keys
 | `reduction.evaluate_fs` | boolean | `false` | Also evaluate the flame speed error |
 | `reduction.error_tolerance` | number or null | `null` | Relative IDT error limit for the selection of the reduced mechanism |
 | `reduction.write_mechanism` | boolean | `true` | Write the selected mechanism as `reduced_<n>sp.yaml` |
-| `reduction.search.mode` | string | `full` | `full` evaluates every size in steps; `adaptive` searches the size within the tolerance |
-| `reduction.search.early_exit` | boolean or null | `null` | Stop a size at the first condition above the tolerance; `null` is true in adaptive mode only |
+| `reduction.search.mode` | string | `full` | `full` evaluates every size in steps. `adaptive` searches the size within the tolerance. `greedy` tests one species at a time and keeps a species whose removal breaks the tolerance |
+| `reduction.search.early_exit` | boolean or null | `null` | Stop a size at the first condition above the tolerance; `null` is true in adaptive and greedy mode |
 | `reduction.search.robust_window` | integer | `3` | Sizes above the optimum that must also pass for the robust optimum |
-| `reduction.search.max_evaluations` | integer or null | `null` | Adaptive: upper limit of reduced mechanisms evaluated |
+| `reduction.search.max_evaluations` | integer or null | `null` | Adaptive and greedy: upper limit of reduced mechanisms evaluated |
 | `reduction.idt.*`, `reduction.fs.*` | various | `null` | Overrides of the solver conditions for the evaluation |
 | `report.T_points` | integer | `12` | Temperatures per pressure and equivalence ratio in the report |
 | `report.plots` | boolean | `true` | Write the PNG figures (needs Matplotlib) |
 
-The `example` folder holds the mechanism, the ethylene data and these configurations; the methane cases are in `example/methane`:
+The `example` folder holds the mechanism and the ethylene data. The ethylene case is in `example/ethylene`; the methane cases are in `example/methane`:
 
-- `config_c2h4_precomputed.json`: the ethylene trajectories of the folder, idt mode, precomputed route.
+- `ethylene/config_c2h4_precomputed.json`: the ethylene trajectories of `example`, idt mode, precomputed route, with a `reduction` block (tolerance 5 percent) and a `report` block.
+- `ethylene/config_c2h4_solver.json`: the same case through the solver route: the 99 ignition cases of the manuscript, 1000 to 1600 K every 60 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, constant volume, 0.2 s.
 - `methane/config_ch4_solver.json`: methane with USC Mech II, both modes, solver route, original method, with a `reduction` block (tolerance 5 percent) and a `report` block.
 - `methane/config_ch4_corrected.json`: the same case with the corrected rate law and the step-size guard.
 - `methane/config_ch4_idt.json`: the IDT-oriented reduction of methane with the settings of the manuscript: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, constant-volume reactor, OH peak, tolerance 5 percent.
 
 The folder `example/methane/sweeps` holds four configurations for the comparison of the method versions on methane. The file names give the rate law and the normalization: `ch4_<original|corrected>_<SAB|Srow>.json`. Each file has a `reduction` block for `gasig reduce`. On methane the corrected rate law keeps 25 species within 5 percent IDT error. The original law keeps 26 or 27 species. Every curve breaks at the removal of C2H4.
 
-`example/r_AB.npy` and `example/ranked_sp.npy` are the results of the version 0.1 script for the ethylene trajectories. They correspond to `rate_law: "original"`, `substep_tol: null`, `abs_S: false` and `normalization: "S_row_sum"`. `config_c2h4_precomputed.json` uses the manuscript switches and gives a different rank.
+`example/r_AB.npy` and `example/ranked_sp.npy` are the results of the version 0.1 script for the ethylene trajectories. They correspond to `rate_law: "original"`, `substep_tol: null`, `abs_S: false` and `normalization: "S_row_sum"`. `ethylene/config_c2h4_precomputed.json` uses the manuscript switches and gives a different rank.
 
 ## Run
 
@@ -184,7 +200,7 @@ gasig reduce config.json
 
 The command reads the rank file of the run (`reduction.ranking_file`). It removes `reduction.step` species per step, down to `reduction.min_species`. It builds each reduced mechanism in memory and computes the ignition delay time at the `idt.solver` conditions, or at the `reduction.idt` overrides. It writes `reduction_sweep.csv` with the maximum relative error per size. The sweep keeps the target species, the fuel and oxidizer species, the reference species and `reduction.keep_species`. Set `reduction.evaluate_fs` to true to add the flame speed error; this is slow. The command needs Cantera and NumPy only.
 
-With `reduction.error_tolerance`, the command selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`. It reports two sizes. The strict optimum is the smallest evaluated size within the tolerance. The robust optimum is the smallest size whose next `robust_window` larger sizes also pass; the report uses it. Set `reduction.search.mode` to `adaptive` for a large mechanism. The search evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance and lists the intervals it did not refine.
+With `reduction.error_tolerance`, the command selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`. It reports two sizes. The strict optimum is the smallest evaluated size within the tolerance. The robust optimum is the smallest size whose next `robust_window` larger sizes also pass; the report uses it. Set `reduction.search.mode` to `adaptive` for a large mechanism. The search evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance and lists the intervals it did not refine. Set it to `greedy` when a size fails while the later species are harmless. The pass tests one species at a time and keeps a species whose removal breaks the tolerance.
 
 To compare the selected mechanism with the detailed one:
 
@@ -193,6 +209,14 @@ gasig report config.json
 ```
 
 The command writes the folder `report/` with `report.md` and `report.json`. The figures show the error curve, the ignition delay time against 1000/T for both mechanisms, and the flame speed when the sweep evaluated flames. A grid point where the Cantera solver fails gets no value and a warning in `report.log`; the report completes.
+
+To compare any mechanism file with the detailed mechanism, without a sweep:
+
+```bash
+gasig report config.json --mechanism reduced_112sp.yaml
+```
+
+The command computes the ignition delay time of both mechanisms on the evaluation conditions (`reduction.idt` over `idt.solver`, with `report.T_points` temperatures per pressure and equivalence ratio). With `reduction.evaluate_fs`, it also computes the flame speeds at the flame conditions. It writes the folder `report_<name>/` and the log `report_<name>.log` in the output folder.
 
 **NOTE:** The ignition delay time is the time of a solver sample. The solver steps change with the mechanism, so the ignition sample moves by up to one step. The step at ignition sets the noise of the error, which reaches 0.3 percent in the methane example at 1600 K and 1 atm.
 
@@ -219,10 +243,11 @@ Table 2. Files in the output folder
 | `reduction_sweep.csv`, `reduction_sweep.json`, `reduce.log` | Error of each reduced mechanism against its species count, the search record, the selection, and the log, from `gasig reduce` | CSV, JSON, text |
 | `reduced_<n>sp.yaml` | The selected reduced mechanism, with transport data when the detailed mechanism has it | Cantera YAML |
 | `report/` | `report.md`, `report.json`, `error_vs_species.png`, `idt_comparison.png`, `flame_speed_comparison.png`, from `gasig report` | Markdown, JSON, PNG |
+| `report_<name>/`, `report_<name>.log` | The comparison of the mechanism file `<name>.yaml` with the detailed mechanism, from `gasig report --mechanism`; no sweep is necessary | Markdown, JSON, PNG, text |
 
 A ranking-only run keeps the sensitivity record in `summary.json` and adds its own ranking block. `config_resolved.json` is a valid configuration file.
 
-`gasig reduce` writes a new `reduce.log`, `reduction_sweep.csv` and `reduction_sweep.json` at each sweep. A case with no ignition gives `inf` in the CSV and `null` in the JSON; `n_unignited` counts these cases. A condition where the Cantera integrator fails on a reduced mechanism also gives `inf`; `n_solver_failures` counts these cases, and the sweep continues. The detailed mechanism must integrate at every condition. The JSON file is written after every size with `status: running`, and completed with the selection at the end. `max_fs_error` is `null` without `reduction.evaluate_fs`. A row with `complete: false` stopped at the first failed condition (early exit); its error is a lower bound, and `smallest_mechanism_within` counts complete rows only.
+`gasig reduce` writes a new `reduce.log`, `reduction_sweep.csv` and `reduction_sweep.json` at each sweep. A case with no ignition gives `inf` in the CSV and `null` in the JSON; `n_unignited` counts these cases. A condition where the Cantera integrator fails on a reduced mechanism also gives `inf`; `n_solver_failures` counts these cases, and the sweep continues. The detailed mechanism must integrate at every condition. The JSON file is written after every size with `status: running`, and completed with the selection at the end. `max_fs_error` is `null` without `reduction.evaluate_fs`. A row with `complete: false` stopped at the first failed condition (early exit); its error is a lower bound, and `smallest_mechanism_within` counts complete rows only. In greedy mode every test is a row. `removed_in_step` holds the species tested. `kept_back` is true when the species stays because its removal breaks the tolerance. The JSON `removal_order` then lists the accepted removals in their order, and `rank_removal_order` the rank.
 
 ## Precomputed data format
 
@@ -263,6 +288,27 @@ Table 4. Method switches
 
 **CAUTION:** The two rate laws give different species ranks. Compare them on the same data before you use the corrected rate law for a reduction.
 
+## Flame speeds with Zero-RK
+
+Zero-RK (Lawrence Livermore National Laboratory, BSD-3-Clause) solves one-dimensional laminar flames with sparse, preconditioned iterative methods. It is built for large mechanisms. This package has not measured a speed gain over the Cantera `FreeFlame`. On the 111-species methane flame Zero-RK took 224 s and the `FreeFlame` 64 s. On a 112-species jet-fuel mechanism at 473 K it took 118 s against 43 s. Each Zero-RK time includes a failed MPI start and the serial retry. Use this backend for constant-Lewis-number flames, for a cross-check, or for a mechanism that the `FreeFlame` does not solve. Set `fs.solver.backend` to `zerork` to use it for the flames of the fs mode, of `gasig reduce` with `reduction.evaluate_fs`, and of `gasig report`.
+
+The package drives the solver in the way of the Zero-RK `flame_speed` example:
+
+1. It writes the mechanism as CHEMKIN files with `cantera.yaml2ck`, once per mechanism.
+2. It computes one Lewis number per species with `lewisGenerator.x`, from the inlet mixture at `lewis_temperature_K`.
+3. It solves the first flame on a coarse grid with the pseudo-unsteady start, from an initial front at 30 percent of the domain. Every later flame starts from the nearest flame that is already solved (`continuation`). Then it rebuilds the grid around the flame and solves the steady problem again, until the grid holds `min_points_per_thickness` points per flame thickness.
+4. It reads the flame speed from the solver log and the profile from the solver data file.
+
+The steady solver of Zero-RK supports constant Lewis numbers only. Its flame speeds differ from the Cantera mixture-averaged values: by 1 percent for methane at phi 1.0. For a 112-species jet-fuel mechanism at 473 K and 1 atm, the difference is 8 percent at phi 1.0 and 21 percent at phi 0.9. Compare the two backends on the detailed mechanism before you mix them in one study. Each solver call runs on `processes` MPI ranks. The MPI build of Zero-RK stops at the first failed Newton step; the package then repeats the call with the serial solver. A solver failure at one condition gives `inf` for that condition in `gasig reduce` and no value in `gasig report`; the run continues.
+
+`Dockerfile.cpu` compiles Zero-RK from source at a fixed commit (`ZERORK_REF`) and lets Open MPI run as root in the container. The CUDA image does not contain Zero-RK. Outside the image, install Zero-RK from its repository and set `ZERORK_HOME` or `fs.solver.zerork.home`.
+
+If you use this backend, cite Zero-RK:
+
+- M. J. McNenly, R. A. Whitesides, D. L. Flowers, Faster solvers for large kinetic mechanisms using adaptive preconditioners, Proc. Combust. Inst. 35 (2015) 581–587. https://doi.org/10.1016/j.proci.2014.05.113
+- S. Lapointe, R. A. Whitesides, M. J. McNenly, Sparse, iterative simulation methods for one-dimensional laminar flames, Combust. Flame 204 (2019) 23–32. https://doi.org/10.1016/j.combustflame.2019.02.030
+- Zero-RK, Lawrence Livermore National Laboratory, https://github.com/LLNL/zero-rk (LLNL-CODE-2025129).
+
 ## Tests
 
 The tests use USC Mech II. The solver tests burn methane. The regression tests use the shipped ethylene trajectories. Run the tests in the container from the repository folder:
@@ -271,7 +317,7 @@ The tests use USC Mech II. The solver tests burn methane. The regression tests u
 docker run --rm -v "<repository folder>:/workspace" --entrypoint pytest ga-sig -q
 ```
 
-Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-to-end tests that take minutes.
+Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-to-end tests that take minutes, among them the methane flame with Zero-RK (markers `slow` and `zerork`). The `zerork` test runs only where Zero-RK is installed, for example in the CPU image.
 
 ## Problems and causes
 
@@ -289,13 +335,16 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 | `conditions do not ignite with the detailed mechanism` | `end_time_s` or `max_steps` is too small for the evaluation conditions | Raise them in `reduction.idt`, or change the conditions |
 | `no evaluated mechanism is within the tolerance` in the log | Every reduced size exceeds `reduction.error_tolerance` | Raise the tolerance, lower `reduction.min_species`, or rank with other targets |
 | `Matplotlib is not installed` in the log | The report extra is not installed | `pip install ".[report]"`; the tables are written in every case |
+| `Zero-RK is not available` | The image was built with `--target gasig`, or `fs.solver.zerork.home` is wrong | Build the full CPU image, or point `home` or `ZERORK_HOME` at a Zero-RK install |
+| `the flame solver failed` in `reduce.log` or in the report log | Zero-RK gave no flame at this condition after the serial retry; the condition gets `inf` (`gasig reduce`) or no value (`gasig report`). A `gave no flame` line of an MPI attempt, followed by `the serial solver repeats it` or `the pseudo-unsteady solver continues`, is normal | Set `fs.solver.zerork.work_dir` to a folder in the run folder and `keep_files` to true. Read `log_<n>`, `log_<n>s` and `log_<n>p` in the subfolder of the flame. Change `rel_tol` or `processes` |
 | `Error: ...` with exit code 3 | A run-time error in a solver or in the data | Read the message; set `GASIG_DEBUG=1` for the traceback; `reduce.log` and `report.log` hold the traceback |
 | Out of GPU memory | The mechanism is too large for the GPU | Use a larger GPU or `device: "cpu"` |
+| The GPU run is slower than the CPU run | The card computes double precision slowly (consumer cards) | Use `device: "cpu"`; on an RTX 2050 the CPU was faster up to 745 species |
 
 ## Limits
 
 - The Jacobian holds the falloff, pressure-dependent and Chebyshev rate constants fixed. It does not differentiate their composition dependence.
-- The flame solver uses the Cantera `FreeFlame` object with mixture-averaged transport by default. Set `fs.solver.transport_model` to `multicomponent` for multicomponent transport.
+- The flame solver uses the Cantera `FreeFlame` object with mixture-averaged transport by default. Set `fs.solver.transport_model` to `multicomponent` for multicomponent transport, or `fs.solver.backend` to `zerork` for the Zero-RK solver with constant Lewis numbers.
 - The sensitivity integration is serial over trajectories. One trajectory of a 1833-species mechanism took approximately 10 min on an NVIDIA L4 GPU.
 - `gasig reduce` evaluates reduced mechanisms in memory and writes the selected mechanism only, not a file for every size.
 - The selection uses the ignition delay time. The flame speed is evaluated and reported, but it does not decide the selection.

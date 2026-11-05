@@ -23,7 +23,7 @@ Each command reads the same configuration file and writes into the same output f
 ### With Docker
 
 1. Install Docker. For GPU runs, install the NVIDIA Container Toolkit (Linux) or use Docker Desktop with WSL 2 (Windows).
-2. Build the image in the repository folder. The CPU image is enough for the reduction steps; the sensitivity integration is faster on a GPU.
+2. Build the image in the repository folder. The CPU image is enough for the reduction steps and, on a laptop, for the sensitivity integration too. A consumer GPU in float64 was slower than the CPU up to 745 species.
 
    ```bash
    docker build -f Dockerfile.cpu -t ga-sig:cpu .
@@ -42,6 +42,8 @@ Each command reads the same configuration file and writes into the same output f
    ```
 
    The output lists the versions of Python, NumPy, Cantera, PyTorch and Matplotlib.
+
+**NOTE:** The CPU image also compiles the Zero-RK flame solvers for the flame-speed backend `fs.solver.backend: "zerork"`. Add `--target gasig` to the build command to leave them out. The README, section Flame speeds with Zero-RK, describes the backend and its citation.
 
 ### With pip
 
@@ -97,12 +99,14 @@ Table 1. Keys to set for a reduction
 | run | `idt.solver.fuel`, `idt.solver.oxidizer` | Mole-based compositions, for example `{"CH4": 1.0}` and `{"O2": 0.21, "N2": 0.79}` |
 | run | `idt.solver.T_K`, `idt.solver.P_atm`, `idt.solver.phi` | The ignition conditions; the solver runs every combination |
 | run | `idt.solver.end_time_s` | Longer than the longest ignition delay time |
+| run, reduce | `idt.solver.preconditioner` | `adaptive` by default; `adaptive_fast` halves the solve time of large mechanisms; `none` is the dense solver |
 | run | `fs.enabled`, `fs.solver.*` | `true` and the flame conditions, when you want the flame-speed mode |
+| run, reduce, report | `fs.solver.backend` | `cantera` (the `FreeFlame`) or `zerork` (the Zero-RK steady flame solver, constant Lewis numbers, in the CPU image). Compare the time and the flame speed of the two backends on your detailed mechanism before a sweep |
 | run | `sensitivity.rate_law`, `aggregation.normalization` | `original` and `S_AB_row_sum` for the method of the paper |
 | run | `ranking.target_species` | The species that the reduction must predict, for example the fuel, O2, OH, H2O and CO2 |
 | reduce | `reduction.error_tolerance` | The allowed relative error of the ignition delay time, for example `0.05` |
 | reduce | `reduction.step`, `reduction.min_species` | The sweep resolution and the smallest size |
-| reduce | `reduction.search.mode` | `full` for the whole curve; `adaptive` for large mechanisms |
+| reduce | `reduction.search.mode` | `full` for the whole curve; `adaptive` for large mechanisms; `greedy` for skeletal mechanisms |
 | reduce | `reduction.keep_species` | Species that must stay, besides the targets and the mixture species |
 | reduce | `reduction.idt`, `reduction.fs` | Evaluation conditions that differ from the solver conditions |
 | report | `report.T_points` | Temperatures per pressure and equivalence ratio in the comparison |
@@ -149,12 +153,13 @@ docker run --rm -v "${PWD}:/workspace" ga-sig:cpu reduce config.json
 
 The command removes species in rank order, builds every reduced mechanism in memory and computes the ignition delay time at the evaluation conditions. With `reduction.error_tolerance` it selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`.
 
-Two search modes exist:
+Three search modes exist:
 
 - `full` evaluates every size from the detailed mechanism down to `reduction.min_species`, `reduction.step` species at a time. Use it for mechanisms with up to a few hundred species, and whenever you want the complete error curve.
 - `adaptive` evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance by bisection and reports the intervals it did not refine. Use it for large mechanisms. Set `reduction.search.max_evaluations` to bound the cost.
+- `greedy` tests one species at a time in rank order. A species whose removal takes the error above the tolerance stays in the mechanism, and the pass continues with the next species. Use it when a size fails while most of the later species are harmless. The pass then keeps the few species that matter. A failed test stops at the first condition above the tolerance. It costs one ignition solve when that condition comes first in the error order. An accepted removal costs a full evaluation. Set `reduction.search.max_evaluations` to bound the number of tests.
 
-With the early exit (`reduction.search.early_exit`, on by default in adaptive mode), a size stops at the first condition above the tolerance. Its error in the table is then a lower bound, marked `complete: false`.
+With the early exit (`reduction.search.early_exit`, on by default in adaptive and greedy mode), a size stops at the first condition above the tolerance. Its error in the table is then a lower bound, marked `complete: false`.
 
 ### 3.3 Report
 
@@ -163,6 +168,14 @@ docker run --rm -v "${PWD}:/workspace" ga-sig:cpu report config.json
 ```
 
 The command reads the sweep result and selects the mechanism. It computes the ignition delay time of the detailed and the selected mechanism on `report.T_points` temperatures per pressure and equivalence ratio. It writes the folder `report/`.
+
+To compare a mechanism file from another source, or an earlier result, add `--mechanism`:
+
+```bash
+docker run --rm -v "${PWD}:/workspace" ga-sig:cpu report config.json --mechanism reduced_112sp.yaml
+```
+
+The command needs no sweep. The package looks for the file in the current folder, then in the output folder, then beside the configuration file. It uses the evaluation conditions of the configuration and, with `reduction.evaluate_fs`, the flame conditions. It writes the folder `report_<name>/` and the log `report_<name>.log`. Set `reduction.idt.T_K` to the two ends of the temperature range. Set `report.T_points` to the number of temperatures; the report fills the range with equal steps.
 
 ### Validate a rank without Docker
 
@@ -205,14 +218,15 @@ Table 3. Files of a complete reduction
 |---|---|
 | `ranked_species.csv` | The rank, from the least to the most important species, with the importance |
 | `summary.json`, `gasig.log` | The run summary and its log |
-| `reduction_sweep.csv` | One row per evaluated size: species, reactions, maximum and mean IDT error, unignited cases, solver failures, flame-speed error, `complete`, the species removed since the size above, seconds |
-| `reduction_sweep.json` | The same rows with every ignition delay time, the removal order, the search record and the selection; written after every size, `status` is `running` until the end |
+| `reduction_sweep.csv` | One row per evaluated size, or per tested species in greedy mode: species, reactions, maximum and mean IDT error, unignited cases, solver failures, flame-speed error, `complete`, the species removed since the size above, `kept_back`, seconds |
+| `reduction_sweep.json` | The same rows with every ignition delay time, the removal order (the accepted removals in greedy mode, with the rank in `rank_removal_order`), the search record and the selection; written after every size, `status` is `running` until the end |
 | `reduced_<n>sp.yaml` | The selected mechanism |
 | `reduce.log` | The log of the sweep; it holds the traceback of a failure |
 | `report/report.md`, `report/report.json` | The report and its numbers |
 | `report/error_vs_species.png` | The error curve with the tolerance and the optima |
 | `report/idt_comparison.png` | The ignition delay time of the detailed mechanism (lines) and the selected mechanism (markers) |
 | `report/flame_speed_comparison.png` | The flame speed, when the sweep evaluated flames |
+| `report_<name>/`, `report_<name>.log` | The comparison of a mechanism file with the detailed mechanism, from `gasig report --mechanism` |
 
 ### The error curve and the selection
 
@@ -250,6 +264,9 @@ The README, section Problems and causes, lists the error messages and the action
 | `The mechanism has species that are not in the rank file` | Run `gasig rank` with this mechanism before `gasig reduce` |
 | `Matplotlib is not installed` | Install the report extra: `pip install ".[report]"`; the tables are written in every case |
 | The sweep is slow | Use `reduction.search.mode: "adaptive"`, fewer evaluation conditions, or `max_evaluations` |
+| The sweep stops at a large size although the later species are harmless | Use `reduction.search.mode: "greedy"`; a species early in the removal order breaks the tolerance at one condition |
+| `Zero-RK is not available` | Build the CPU image without `--target gasig`, or set `fs.solver.zerork.home` or `ZERORK_HOME` |
+| `the flame solver failed` with the `zerork` backend | The condition gets `inf` (`gasig reduce`) or no value (`gasig report`) and the run continues. A `gave no flame` line of an MPI attempt before the serial retry is normal. Set `fs.solver.zerork.work_dir` to a folder in the run folder and `keep_files` to true; read `log_<n>` in the subfolder of that flame |
 
 ## Example: methane with USC Mech II
 
@@ -284,12 +301,15 @@ The four configurations in `example/methane/sweeps/` repeat the sweep with the c
 
 `example/methane/config_ch4_idt.json` applies the settings of the manuscript's case study to methane: ignition delay times only (`fs.enabled` false, `ranking.combine` `idt`), the original rate law, `abs_S` true and `S_AB_row_sum`. The conditions follow the paper's data collector: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, a constant-volume reactor, rtol 1e-6, atol 1e-12 and the OH peak as the ignition sample. That is 117 trajectories. The targets are the fuel, O2, OH, H2O, HO2 and CO2, as in the ethylene example. The sweep runs every size down to 15 species with every condition evaluated, which gives the complete error curve of Fig. 5 of the paper; the tolerance is 5 percent.
 
-Table 4. Run times of the manuscript case on one CPU core
+Table 4. Run times of the manuscript case
 
 | Command | Work | Time |
 |---|---|---|
-| `run` | 117 ignition cases and their sensitivity integration | 2.5 min (measured) |
+| `run` | 117 ignition cases and their sensitivity integration, one CPU core | 2.5 min (measured) |
+| `run`, `device` `cuda` | the same on an RTX 2050 (4 GB), float64 | 3.9 min (measured) |
 | `reduce`, full, every condition | 96 sizes, 117 conditions each | estimate: 20 to 30 min |
 | `report` | 13 temperatures, 9 pressure and equivalence-ratio pairs | estimate: approximately 2 min |
+
+The GPU run is slower here, and also on a 745-species mechanism: 0.23 s per step on the card against 0.17 s on the CPU. A consumer card computes double precision slowly. Use `device` `cpu` on such a card. The ranks of both devices agree, up to a swap of two species with equal importance. A card with a full double-precision rate, such as an A100, is needed for a gain.
 
 To shorten the sweep, set `reduction.search.mode` to `adaptive` (the early exit is then on); the search needs approximately 25 sizes, and failed sizes stop at the first failed condition. To shorten the run, keep every second temperature.

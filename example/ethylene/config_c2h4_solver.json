@@ -1,0 +1,52 @@
+{
+  "mechanism": "../USCMechII.yaml",
+  "device": "cpu",
+  "output_dir": "results_c2h4_solver",
+  "sensitivity": {
+    "rate_law": "original",
+    "substep_tol": null,
+    "progress_every": 0
+  },
+  "aggregation": {
+    "abs_S": true,
+    "normalization": "S_AB_row_sum"
+  },
+  "idt": {
+    "enabled": true,
+    "source": "solver",
+    "solver": {
+      "fuel": {"C2H4": 1.0},
+      "oxidizer": {"O2": 0.21, "N2": 0.79},
+      "T_K": [1000.0, 1060.0, 1120.0, 1180.0, 1240.0, 1300.0, 1360.0, 1420.0, 1480.0, 1540.0, 1600.0],
+      "P_atm": [1.0, 5.0, 30.0],
+      "phi": [0.5, 1.0, 2.0],
+      "reactor": "constant_volume",
+      "end_time_s": 0.2,
+      "reference_species": "OH",
+      "ignition_criterion": "reference_peak",
+      "rtol": 1e-6,
+      "atol": 1e-12
+    }
+  },
+  "fs": {
+    "enabled": false
+  },
+  "ranking": {
+    "target_species": ["C2H4", "O2", "OH", "H2O", "HO2", "CO2"],
+    "combine": "idt"
+  },
+  "reduction": {
+    "step": 1,
+    "min_species": 15,
+    "error_tolerance": 0.05,
+    "write_mechanism": true,
+    "search": {
+      "mode": "full",
+      "early_exit": false
+    }
+  },
+  "report": {
+    "T_points": 11,
+    "plots": true
+  }
+}
