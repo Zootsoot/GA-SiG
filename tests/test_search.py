@@ -40,6 +40,16 @@ def test_select_optima_strict_and_robust():
     assert select_optima(sparse, 0.05, 3, require_full_window=True) == (36, None)
 
 
+def test_select_optima_window_counts_evaluated_sizes_of_a_stepped_sweep():
+    """Step 5, window 3: the window holds the next 3 evaluated sizes, not the sizes n + 1 to n + 3."""
+    isolated = {100: 0.0, 95: 0.2, 90: 0.01, 85: 0.3}
+    assert select_optima(isolated, 0.05, 3) == (90, None)          # 90 passes alone; it is not robust
+    stepped = {100: 0.0, 95: 0.01, 90: 0.2, 85: 0.01, 80: 0.01, 75: 0.01, 70: 0.01, 65: 0.4}
+    assert select_optima(stepped, 0.05, 3) == (70, 70)
+    assert select_optima(stepped, 0.05, 4) == (70, 95)             # 90 is in the window of 70 to 85
+    assert select_optima(stepped, 0.05, 3, require_full_window=True) == (70, None)
+
+
 def test_adaptive_search_finds_the_break_with_few_evaluations():
     calls = []
 
@@ -81,10 +91,24 @@ def test_adaptive_search_near_miss_island_and_unresolved_gap():
 def test_adaptive_search_respects_the_budget():
     res = adaptive_search(step_curve(27), 111, 15, 0.05, probes=[],
                           params=SearchParams(coarse_points=12, max_evaluations=10))
-    assert res.evaluations == 10 and res.budget_exhausted
+    assert res.evaluations == 11 and res.budget_exhausted        # 10 reduced sizes and the detailed size
     assert res.strict_optimum == 28
     assert res.robust_optimum is None            # no window was confirmed
     assert any(u["kind"] == "crossing" for u in res.unresolved)
+
+
+def test_adaptive_budget_counts_reduced_mechanisms_only():
+    """max_evaluations limits the reduced sizes; the detailed size n_max is not one of them."""
+    for budget in (1, 5):
+        calls = []
+
+        def evaluate(n):
+            calls.append(n)
+            return 0.0 if n == 100 else 0.01
+
+        res = adaptive_search(evaluate, 100, 20, 0.05, probes=[], params=SearchParams(max_evaluations=budget))
+        assert calls[0] == 100 and len(calls) == budget + 1 and len(set(calls)) == len(calls)
+        assert res.budget_exhausted and res.strict_optimum == min(calls)
 
 
 def test_adaptive_search_noise_band_resolves_neighbours():

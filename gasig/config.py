@@ -265,9 +265,11 @@ SCHEMA: dict[str, Any] = {
         "plots": Spec(bool, True, doc="Write the PNG figures (needs Matplotlib)."),
     },
     "ranking": {
-        "target_species": Spec(list, [], doc="Target species names."),
+        "target_species": Spec(list, [], doc="Target species names. The rank stage needs at least one "
+                                             "species of the mechanism."),
         "combine": Spec(str, "auto", choices=("auto", "idt", "fs", "hybrid"),
-                        doc="Matrix to rank: 'auto' takes the hybrid when both modes ran, else the one that ran."),
+                        doc="Matrix to rank: 'auto' takes the hybrid when both modes are enabled, else the "
+                            "enabled mode. 'hybrid', 'idt' and 'fs' need the modes they name to be enabled."),
         "hybrid_weight_idt": Spec(NUMBER, 0.5, doc="Weight of r_AB(idt) in the hybrid matrix."),
         "eps_edge": Spec(NUMBER, 1e-16, doc="Entries of r_AB at or below this value are not graph edges."),
         "top_n_print": Spec(int, 15, doc="Number of species listed at each end of the rank in the log and summary."),
@@ -440,6 +442,13 @@ def _check_mode_requirements(cfg: dict) -> None:
         raise ConfigError("'fs.flame_tip_T_fraction' must be in (0, 1] or null.")
     if not (idt["enabled"] or fs["enabled"]):
         raise ConfigError("Enable at least one mode: set 'idt.enabled' or 'fs.enabled' to true.")
+    # The rank stage reads only the matrices of the enabled modes. A matrix of a disabled mode
+    # can come from an earlier run in the same output_dir, so this check stops it here.
+    combine = cfg["ranking"]["combine"]
+    if combine == "hybrid" and not (idt["enabled"] and fs["enabled"]):
+        raise ConfigError("'ranking.combine' hybrid needs both 'idt.enabled' and 'fs.enabled' true.")
+    if combine in ("idt", "fs") and not cfg[combine]["enabled"]:
+        raise ConfigError(f"'ranking.combine' {combine} needs '{combine}.enabled' true.")
     w = cfg["ranking"]["hybrid_weight_idt"]
     if not (0.0 <= float(w) <= 1.0):
         raise ConfigError("'ranking.hybrid_weight_idt' must be in [0, 1].")

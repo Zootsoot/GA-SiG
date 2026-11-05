@@ -80,3 +80,58 @@ def test_other_rules_are_unchanged():
     ref = ref.max() * 2.0 - ref
     i, tau, note = ignition_sample(t, T, ref, "reference_peak")
     assert i == 0 and note is None
+
+
+def with_late_dip(t, ref, t_dip, rel=1e-9):
+    """One non-increase of relative size ``rel`` at ``t_dip``; the profile rises again after it."""
+    ref = ref.copy()
+    k = int(np.argmin(np.abs(t - t_dip)))
+    ref[k + 1] = ref[k] * (1.0 - rel)
+    assert ref[k + 2] > ref[k + 1]
+    return ref
+
+
+def test_rule_1_ignores_a_local_maximum_after_the_event():
+    # a 1e-9 wiggle on the drift at 0.5 s is no ignition; rule 2 (temperature peak) applies
+    t, T, ref = profiles(drift=1.0e-2, oh_peak=0.0, T_overshoot=150.0)
+    i, tau, note = ignition_sample(t, T, with_late_dip(t, ref, 0.5), "reference_peak")
+    assert tau == pytest.approx(2.05e-3, abs=1e-5) and i == int(np.argmax(T))
+    assert note is not None and "temperature peak" in note
+    # the same wiggle on the rule-3 profile gives the mean of the steepest rises
+    t, T, ref = profiles(drift=1.0e-2, oh_peak=0.0, T_drift=50.0)
+    i, tau, note = ignition_sample(t, T, with_late_dip(t, ref, 0.5), "reference_peak")
+    assert tau == pytest.approx(0.5 * (T_IGN + T_OH), abs=1e-5)
+    assert note is not None and "mean of their steepest rises" in note
+
+
+def test_rule_1_accepts_a_local_maximum_inside_the_event():
+    # 3 ms is below POST_IGNITION_FACTOR times the heat-release time (about 4 ms)
+    t, T, ref = profiles(drift=1.0e-2, oh_peak=0.0, T_overshoot=150.0)
+    i, tau, note = ignition_sample(t, T, with_late_dip(t, ref, 3.0e-3), "reference_peak")
+    assert tau == pytest.approx(3.0e-3, rel=0.05)
+    assert note is not None and "first peak after the heat-release peak" in note
+
+
+METHANE = {"fuel": {"CH4": 1.0}, "oxidizer": {"O2": 0.21, "N2": 0.79}, "reactor": "constant_volume",
+           "end_time_s": 2.0e-3, "ignition_criterion": "reference_peak", "rtol": 1e-6, "atol": 1e-12,
+           "max_steps": 200000}
+
+
+def test_reference_species_that_never_forms_is_a_solver_failure(mech_path):
+    """An ignited reactor whose reference species is absent and never forms gives a solver error, not a
+    ConfigError, so a reduction sweep counts the condition as failed and continues."""
+    import cantera as ct
+
+    from gasig.errors import ConfigError, IgnitionSolverError
+    from gasig.reduce import _idt_values
+    from gasig.solvers.idt import run_idt
+
+    cfg = dict(METHANE, reference_species="AR")        # inert and not in the mixture: X_AR stays 0
+    with pytest.raises(IgnitionSolverError, match="does not form the reference species 'AR'"):
+        run_idt(mech_path, None, 1500.0, ct.one_atm, 1.0, cfg, label="idt-ar")
+    taus, n_unignited, complete, n_failed = _idt_values(ct.Solution(mech_path), [(1500.0, ct.one_atm, 1.0)],
+                                                        cfg, "red")
+    assert taus == [float("inf")] and n_failed == 1 and complete
+    # a reference species in the initial mixture (a reactant) stays a configuration error
+    with pytest.raises(ConfigError, match="reactant or a diluent"):
+        run_idt(mech_path, None, 1500.0, ct.one_atm, 1.0, dict(METHANE, reference_species="CH4"), label="idt-ch4")

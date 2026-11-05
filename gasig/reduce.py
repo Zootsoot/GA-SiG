@@ -25,7 +25,8 @@ the row is marked ``complete: false``.
 
 A solver failure at one condition counts as a failed condition (inf). The
 sweep records it in ``reduce.failures.jsonl`` (:mod:`gasig.errors`) and
-continues.
+continues. A reduced mechanism that ignites but does not form the reference
+species gives no ignition delay time; that condition also counts as failed.
 
 The module needs Cantera and NumPy only; it does not import torch.
 
@@ -253,7 +254,13 @@ def _idt_values(gas: ct.Solution, conditions: list[tuple[float, float, float]], 
     Conditions that were not evaluated hold ``None``. A failure of the
     integrator counts as a failed condition (inf); it is logged and recorded
     in the failure file. With ``on_failure="raise"`` it raises an
-    :class:`IgnitionSolverError` with the condition. The result is ``(taus,
+    :class:`IgnitionSolverError` with the condition. A reduced mechanism
+    that ignites but does not form the reference species gives an
+    :class:`IgnitionSolverError` of :func:`run_idt`, so the same rule
+    applies. A :class:`ConfigError` of :func:`run_idt` (the reference
+    species peaks at the first sample) also counts as failed with
+    ``on_failure="inf"``; with ``on_failure="raise"`` it goes to the
+    caller. The result is ``(taus,
     n_unignited, complete, n_failed)``.
     """
     taus: list = [None] * len(conditions)
@@ -277,6 +284,22 @@ def _idt_values(gas: ct.Solution, conditions: list[tuple[float, float, float]], 
                         "the condition counts as failed.", label, i, T0, P0 / ct.one_atm, phi, _failure_text(exc))
             record_failure(exc if isinstance(exc, SolverError) else IgnitionSolverError(_failure_text(exc)),
                            stage="reduce", **context)
+            tau = float("inf")
+            n_failed += 1
+        except ConfigError as exc:
+            # run_idt raises this error when the reactor ignites but the reference species peaks at the
+            # first sample. The detailed mechanism passed the same check at the same conditions, so for a
+            # reduced mechanism the cause is the mechanism: no kept reaction forms the reference species.
+            if on_failure == "raise":
+                raise
+            species = exc.context.get("species", idt_cfg.get("reference_species"))
+            context = {"label": f"{label}-c{i}", "condition": i, "T0_K": T0, "P0_atm": P0 / ct.one_atm,
+                       "phi": phi, "n_species": gas.n_species, "species": species}
+            message = (f"the reactor ignited, but the reduced mechanism does not form the reference species "
+                       f"'{species}'; no ignition sample is available")
+            log.warning("%s-c%d: T0=%.0f K, P0=%.2f atm, phi=%.2f: %s; the condition counts as failed.",
+                        label, i, T0, P0 / ct.one_atm, phi, message)
+            record_failure(IgnitionSolverError(message), stage="reduce", **context)
             tau = float("inf")
             n_failed += 1
         else:
@@ -772,7 +795,11 @@ def sweep(cfg: dict, out_dir: Path) -> dict:
             strict = first["n_species"] if first and first["accepted"] else None
             robust = strict
         else:
+            # The window counts evaluated sizes: with a step above 1 it covers window x step species.
             strict, robust = select_optima(errors, tol, window)
+            if step > 1 and window > 0:
+                log.info("the robust window holds the next %d evaluated sizes, %d species with step %d.",
+                         window, window * step, step)
         selected = robust if robust is not None else strict
         if selected is None:
             log.warning("no evaluated mechanism is within the tolerance of %.3g%%.", 100.0 * tol)

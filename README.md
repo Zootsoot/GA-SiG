@@ -83,21 +83,25 @@ One JSON file holds every input path and every switch. Make a template that cont
 gasig template -o config.json
 ```
 
-Then change the keys. The package resolves relative paths against the folder of the JSON file. Unknown keys are errors. Table 1 lists the main keys; `gasig template` shows all of them.
+Then change the keys. The package resolves relative paths against the folder of the JSON file. Unknown keys are errors. Table 1 lists the keys of the stable features. Table 6 lists the keys of the features under development. `gasig template` shows all keys with their defaults.
 
-Table 1. Main configuration keys
+Table 1. Configuration keys
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `mechanism` | string | none | Cantera mechanism file (`.yaml`) |
+| `phase` | string or null | `null` | Phase name in the mechanism file; `null` takes the first phase |
 | `device` | string | `auto` | `auto`, `cpu`, `cuda` or `cuda:N` |
+| `dtype` | string | `float64` | Floating-point type of the torch computation: `float64` or `float32`. The start-up self-check always runs in float64 |
 | `output_dir` | string | `results` | Folder for all outputs, relative to the configuration file |
+| `log_level` | string | `info` | Level of the console log and of the log file: `debug`, `info` or `warning` |
 | `sensitivity.rate_law` | string | `original` | `original` or `corrected`. Refer to the section Versions of the method |
 | `sensitivity.substep_tol` | number or null | `null` | Tolerance of the step-size guard; `null` disables the guard |
 | `sensitivity.max_substeps` | integer | `64` | Upper limit of sub-steps per data interval |
 | `sensitivity.concentration_floor` | number | `1e-30` | Additive floor on concentrations in the corrected rate law, kmol/m3 |
 | `sensitivity.save_S` | boolean | `false` | Also write `S_abs_max_<mode>.npy` |
 | `sensitivity.self_check` | boolean | `true` | Compare the torch rates with the Cantera rates at start-up |
+| `sensitivity.progress_every` | integer | `50` | Write a progress line to the log every N steps; `0` writes one line per trajectory only |
 | `aggregation.abs_S` | boolean | `true` | Sum `abs(S)` over the reactions of each species |
 | `aggregation.normalization` | string | `S_AB_row_sum` | `S_AB_row_sum` or `S_row_sum` |
 | `idt.enabled` | boolean | `false` | Run the idt mode |
@@ -109,6 +113,9 @@ Table 1. Main configuration keys
 | `idt.solver.preconditioner` | string | `adaptive` | `adaptive` (Cantera preconditioner, GMRES), `adaptive_fast` (third-body and falloff terms left out of the preconditioner), `none` (dense solver) |
 | `idt.solver.reference_species` | string | `OH` | Species whose mole-fraction peak marks ignition |
 | `idt.solver.ignition_criterion` | string | `reference_peak` | Peak of the reference species within the ignition event, or `max_dTdt` |
+| `idt.solver.rtol`, `idt.solver.atol`, `idt.solver.max_steps` | number, number, integer | `1e-6`, `1e-12`, `200000` | Relative and absolute tolerances of the reactor integrator; upper limit of solver steps per trajectory |
+| `idt.solver.skip_unignited` | boolean | `false` | Leave out the trajectories with no detected ignition |
+| `idt.solver.save_trajectories` | boolean | `true` | Write the trajectories to `idt_data/` in the precomputed format |
 | `idt.precomputed.*` | strings | none | Files `time`, `T`, `P`, `Y` and `index` |
 | `fs.enabled` | boolean | `false` | Run the fs mode |
 | `fs.source` | string | `solver` | `solver` or `precomputed` |
@@ -117,19 +124,24 @@ Table 1. Main configuration keys
 | `fs.solver.T_unburnt_K`, `fs.solver.P_atm`, `fs.solver.phi` | number, lists | `300`, none, none | Flame conditions |
 | `fs.solver.domain_width_m` | number | `0.03` | Width of the flame domain |
 | `fs.solver.transport_model` | string | `mixture-averaged` | Cantera transport model; the `zerork` backend ignores it |
+| `fs.solver.refine.ratio`, `fs.solver.refine.slope`, `fs.solver.refine.curve`, `fs.solver.refine.prune` | numbers | `3.0`, `0.06`, `0.12`, `0.03` | Grid refinement criteria of the Cantera `FreeFlame`: maximum ratio of adjacent cell widths, slope, curvature and prune |
+| `fs.solver.loglevel` | integer | `0` | Log level of the Cantera flame solver |
+| `fs.solver.save_profiles` | boolean | `true` | Write the profiles to `fs_data/` in the precomputed format |
+| `fs.solver.flame_tip_T_fraction` | number or null | not set | Alias of `fs.flame_tip_T_fraction`; the alias wins when both are set |
 | `fs.solver.backend` | string | `cantera` | `cantera` solves the `FreeFlame`; `zerork` runs the Zero-RK premixed steady flame solver. Refer to the section Flame speeds with Zero-RK |
 | `fs.solver.zerork.home` | string or null | `null` | Zero-RK install folder, relative to the configuration file; `null` uses `ZERORK_HOME`, then `/opt/zero-rk` |
 | `fs.solver.zerork.processes` | integer or null | `null` | MPI ranks per flame; `null` uses the available CPUs, at most 8 |
 | `fs.solver.zerork.min_points_per_thickness` | number | `12` | Grid points per flame thickness that end the regrid loop |
 | `fs.solver.zerork.rel_tol` | number | `1e-2` | Relative tolerance of the steady solver |
-| `fs.solver.zerork.work_dir`, `fs.solver.zerork.keep_files` | string or null, boolean | `null`, `false` | Folder for the solver files, relative to the configuration file: `run-<pid>/<flame>/` per process and flame, `mechanisms/` for the CHEMKIN files. `keep_files` keeps them and needs `work_dir` |
+| `fs.solver.zerork.work_dir`, `fs.solver.zerork.keep_files` | string or null, boolean | `null`, `false` | Folder for the solver files, relative to the configuration file. Each process writes to its own folder `run-<host>-<pid>-<token>/`: `<flame>/` for each flame, `mechanisms/` for the CHEMKIN files. `keep_files` keeps them and needs `work_dir` |
 | `fs.solver.zerork.continuation` | boolean | `true` | Start each flame from the nearest flame that the process solved before, of the same mechanism or of another one. The cold start runs if this start fails |
 | `fs.solver.zerork.mpiexec`, `fs.solver.zerork.lewis_temperature_K`, `fs.solver.zerork.max_solves`, `fs.solver.zerork.timeout_s` | various | `mpirun --oversubscribe`, `1500`, `10`, `null` | MPI launcher, temperature of the Lewis numbers, solver calls per flame, time limit per call. A call over the time limit counts as failed, and the next attempt runs |
 | `fs.precomputed.*` | strings | none | Files `position`, `velocity`, `T`, `P`, `Y` and optional `index` |
-| `ranking.target_species` | list | `[]` | Target species names |
-| `ranking.combine` | string | `auto` | `auto`, `idt`, `fs` or `hybrid` |
+| `ranking.target_species` | list | `[]` | Target species names. The rank stage needs at least one species of the mechanism |
+| `ranking.combine` | string | `auto` | `auto`, `idt`, `fs` or `hybrid`. `auto` takes the hybrid when both modes are enabled, else the enabled mode. `hybrid` needs both modes enabled; `idt` and `fs` need that mode enabled |
 | `ranking.hybrid_weight_idt` | number | `0.5` | Weight of the idt matrix in the hybrid matrix |
 | `ranking.eps_edge` | number | `1e-16` | Entries of `r_AB` at or below this value are not graph edges |
+| `ranking.top_n_print` | integer | `15` | Number of species at each end of the rank in the log and in `summary.json` |
 | `reduction.ranking_file` | string | `ranked_species.csv` | Rank file in `output_dir`, from the rank stage |
 | `reduction.step` | integer | `1` | Species removed per sweep step |
 | `reduction.min_species` | integer | `20` | Smallest mechanism size of the sweep; the last step is shorter when necessary |
@@ -140,8 +152,12 @@ Table 1. Main configuration keys
 | `reduction.write_mechanism` | boolean | `true` | Write the selected mechanism as `reduced_<n>sp.yaml` |
 | `reduction.search.mode` | string | `full` | `full` evaluates every size in steps. `adaptive` searches the size within the tolerance. `greedy` and `lk_greedy` are under development; refer to the section Features under development |
 | `reduction.search.early_exit` | boolean or null | `null` | Stop a size at the first condition above the tolerance; `null` is true in `adaptive`, `greedy` and `lk_greedy` mode |
-| `reduction.search.robust_window` | integer | `3` | Sizes above the optimum that must also pass for the robust optimum |
+| `reduction.search.robust_window` | integer | `3` | Number of the next larger evaluated sizes that must also pass for the robust optimum |
 | `reduction.search.max_evaluations` | integer or null | `null` | `adaptive`, `greedy` and `lk_greedy`: upper limit of reduced mechanisms evaluated |
+| `reduction.search.coarse_points` | integer | `16` | `adaptive`: number of sizes in the coarse pass, denser at small sizes |
+| `reduction.search.importance_gap_probes` | integer | `5` | `adaptive`: number of the largest importance gaps of the rank that the search probes on both sides |
+| `reduction.search.near_miss_factor` | number | `2.0` | `adaptive`: the search refines a failed interval when its smaller error is below this factor times the tolerance |
+| `reduction.search.noise` | number | `0.003` | `adaptive`: an error within this band of the tolerance is undecided; the search resolves it to width 1 |
 | `lk.*`, `units.*`, `reduction.search.block_size`, `tier0_score`, `pass2_tolerance`, `units` | various | various | Keys of the features under development; refer to Table 6 |
 | `reduction.idt.*`, `reduction.fs.*` | various | `null` | Overrides of the solver conditions for the evaluation |
 | `report.T_points` | integer | `12` | Temperatures per pressure and equivalence ratio in the report |
@@ -153,12 +169,14 @@ The `example` folder holds the mechanism and the ethylene data. The ethylene cas
 - `ethylene/config_c2h4_solver.json`: the same case through the solver route: the 99 ignition cases of the manuscript, 1000 to 1600 K every 60 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, constant volume, 0.2 s.
 - `methane/config_ch4_solver.json`: methane with USC Mech II, both modes, solver route, original method, with a `reduction` block (tolerance 5 percent) and a `report` block.
 - `methane/config_ch4_corrected.json`: the same case with the corrected rate law and the step-size guard.
-- `methane/config_ch4_idt.json`: the IDT-oriented reduction of methane with the settings of the manuscript: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, constant-volume reactor, OH peak, tolerance 5 percent.
+- `methane/config_ch4_idt.json`: the IDT-oriented reduction of methane with the conditions of the manuscript: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, constant-volume reactor, OH peak, tolerance 5 percent.
 - `methane/config_ch4_lk_greedy.json`: under development; the `lk_greedy` search, with the linearised knockout (LK), on methane, with every configuration key. Refer to the section Features under development.
 
 The folder `example/methane/sweeps` holds four configurations for the comparison of the method versions on methane. The file names give the rate law and the normalization: `ch4_<original|corrected>_<SAB|Srow>.json`. Each file has a `reduction` block for `gasig reduce`. On methane the corrected rate law keeps 25 species within 5 percent IDT error. The original law keeps 26 or 27 species. Every curve breaks at the removal of C2H4.
 
-`example/r_AB.npy` and `example/ranked_sp.npy` are the results of the version 0.1 script for the ethylene trajectories. They correspond to `rate_law: "original"`, `substep_tol: null`, `abs_S: false` and `normalization: "S_row_sum"`. `ethylene/config_c2h4_precomputed.json` uses the manuscript switches and gives a different rank.
+`example/r_AB.npy` and `example/ranked_sp.npy` are the results of the version 0.1 script for the ethylene trajectories. They correspond to `rate_law: "original"`, `substep_tol: null`, `abs_S: false` and `normalization: "S_row_sum"`. `ethylene/config_c2h4_precomputed.json` uses `rate_law: "original"`, `abs_S: true` and `normalization: "S_AB_row_sum"`, the definition in the paper text. It gives a different rank.
+
+**NOTE:** Every configuration in `example/ethylene` and every configuration directly in `example/methane` uses `S_AB_row_sum`. A reproduction of the published computation needs `normalization: "S_row_sum"` with `rate_law: "original"` and `abs_S: true` (refer to Table 4). `methane/sweeps/ch4_original_Srow.json` uses these switches on methane.
 
 ## Run
 
@@ -194,6 +212,8 @@ To rank the same sensitivities again with other target species:
    gasig rank config.json
    ```
 
+The rank stage reads only the `r_AB_<mode>.npy` files of the enabled modes. To rank the hybrid matrix from the files of earlier runs in the same output folder, enable both modes. The run stops with a configuration error before the sensitivity integration when `ranking.target_species` is empty or holds no species of the mechanism.
+
 To measure how the rank performs, remove species in rank order and get the error of each reduced mechanism:
 
 ```bash
@@ -202,7 +222,7 @@ gasig reduce config.json
 
 The command reads the rank file of the run (`reduction.ranking_file`). It removes `reduction.step` species per step, down to `reduction.min_species`. It builds each reduced mechanism in memory and computes the ignition delay time at the `idt.solver` conditions, or at the `reduction.idt` overrides. It writes `reduction_sweep.csv` with the maximum relative error per size. The sweep keeps the target species, the fuel and oxidizer species, the reference species and `reduction.keep_species`. Set `reduction.evaluate_fs` to true to add the flame speed error; this is slow. The command needs Cantera and NumPy only.
 
-With `reduction.error_tolerance`, the command selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`. It reports two sizes. The strict optimum is the smallest evaluated size within the tolerance. The robust optimum is the smallest size whose next `robust_window` larger sizes also pass; the report uses it. Set `reduction.search.mode` to `adaptive` for a large mechanism. The search evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance and lists the intervals it did not refine. Two more search modes, `greedy` and `lk_greedy`, are under development. Refer to the section Features under development.
+With `reduction.error_tolerance`, the command selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`. It reports two sizes. The strict optimum is the smallest evaluated size within the tolerance. The robust optimum is the smallest size whose next `robust_window` larger sizes also pass; the report uses it. The window counts evaluated sizes. With `reduction.step` above 1, the window covers `robust_window` times `step` species. If no size meets the window, the command selects the strict optimum. Set `reduction.search.mode` to `adaptive` for a large mechanism. The search evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance and lists the intervals it did not refine. Two more search modes, `greedy` and `lk_greedy`, are under development. Refer to the section Features under development.
 
 To compare the selected mechanism with the detailed one:
 
@@ -211,6 +231,8 @@ gasig report config.json
 ```
 
 The command writes the folder `report/` with `report.md` and `report.json`. The figures show the error curve, the ignition delay time against 1000/T for both mechanisms, and the flame speed when the sweep evaluated flames. A grid point where the Cantera solver fails gets no value and a warning in `report.log`; the report completes.
+
+When `reduction_sweep.json` has a status other than `complete`, the sweep did not complete. `gasig report` then selects only from the evaluated sizes, and a smaller mechanism within the tolerance can exist. The command writes a warning to `report.log` and to `report.md`. It sets `sweep_complete` to `false` in `report.json`. Run `gasig reduce` again to complete the sweep before you use the selected mechanism.
 
 To compare any mechanism file with the detailed mechanism, without a sweep:
 
@@ -244,15 +266,16 @@ Table 2. Files in the output folder
 | `summary.json`, `config_resolved.json`, `gasig.log` | Run summary, the configuration with all defaults, the log | JSON, text |
 | `reduction_sweep.csv`, `reduction_sweep.json`, `reduce.log` | Error of each reduced mechanism against its species count, the search record, the selection, and the log, from `gasig reduce` | CSV, JSON, text |
 | `reduced_<n>sp.yaml` | The selected reduced mechanism, with transport data when the detailed mechanism has it | Cantera YAML |
-| `report/` | `report.md`, `report.json`, `error_vs_species.png`, `idt_comparison.png`, `flame_speed_comparison.png`, from `gasig report` | Markdown, JSON, PNG |
+| `report/` | `report.md`, `report.json`, `error_vs_species.png`, `idt_comparison.png`, `flame_speed_comparison.png`, from `gasig report`. In `report.json`, `sweep_status` is the status of `reduction_sweep.json` (`unknown` when the file has no status), and `sweep_complete` is `true` when the sweep completed | Markdown, JSON, PNG |
 | `report_<name>/`, `report_<name>.log` | The comparison of the mechanism file `<name>.yaml` with the detailed mechanism, from `gasig report --mechanism`; no sweep is necessary | Markdown, JSON, PNG, text |
+| `gasig.failures.jsonl`, `reduce.failures.jsonl`, `report.failures.jsonl`, `report_<name>.failures.jsonl` | The failure file beside each log. It holds one JSON line per recorded failure: `time`, `fatal`, `category`, `type`, `message`, and `stage` and `context` when known. A non-fatal failure, for example a solver failure at one condition, has `fatal: false`. The error that stops a command has `fatal: true`. `gasig run` and `gasig rank` add lines to `gasig.failures.jsonl`; `gasig reduce` and `gasig report` start a new file at each run | JSON lines |
 | `lk_order.csv` | Under development: the LK order, in the format of `ranked_species.csv`. `importance` holds the LK score, `gasig_importance` the GA-SiG importance | CSV |
-| `lk_scores.npy` | Under development: the LK score of every species on each screened trajectory, shape (number of screened trajectories, Ns) | NumPy |
+| `lk_scores.npy` | Under development: the signed time-shift estimate `v_b` of every species on each screened trajectory, shape (number of screened trajectories, Ns). A positive value is a longer ignition delay time, a negative value a shorter one. The LK score of a species is the maximum of `abs(v_b)` over the screened trajectories | NumPy |
 | `chain_units.json` | Under development: the detected chain units, the links with their production and consumption reactions, and the detection settings | JSON |
 
 A ranking-only run keeps the sensitivity record in `summary.json` and adds its own ranking block. `config_resolved.json` is a valid configuration file.
 
-`gasig reduce` writes a new `reduce.log`, `reduction_sweep.csv` and `reduction_sweep.json` at each sweep. A case with no ignition gives `inf` in the CSV and `null` in the JSON; `n_unignited` counts these cases. A condition where the Cantera integrator fails on a reduced mechanism also gives `inf`; `n_solver_failures` counts these cases, and the sweep continues. The detailed mechanism must integrate at every condition. The JSON file is written after every size with `status: running`, and completed with the selection at the end. `max_fs_error` is `null` without `reduction.evaluate_fs`. A row with `complete: false` stopped at the first failed condition (early exit); its error is a lower bound, and `smallest_mechanism_within` counts complete rows only. In greedy mode every test is a row. `removed_in_step` holds the species tested. `kept_back` is true when the species stays because its removal breaks the tolerance. The JSON `removal_order` then lists the accepted removals in their order, and `rank_removal_order` the rank.
+`gasig reduce` writes a new `reduce.log`, `reduction_sweep.csv` and `reduction_sweep.json` at each sweep. A case with no ignition gives `inf` in the CSV and `null` in the JSON; `n_unignited` counts these cases. A condition where the Cantera integrator fails on a reduced mechanism also gives `inf`; `n_solver_failures` counts these cases, and the sweep continues. A reduced mechanism that ignites but does not form the reference species also gives `inf`. `n_solver_failures` counts these cases too. `reduce.failures.jsonl` records each of these failures. The detailed mechanism must integrate at every condition and form the reference species; else the sweep stops. The JSON file is written after every size with `status: running`, and completed with the selection at the end. If the sweep stops before the end, the status stays `running`. `max_fs_error` is `null` without `reduction.evaluate_fs`. A row with `complete: false` stopped at the first failed condition (early exit); its error is a lower bound, and `smallest_mechanism_within` counts complete rows only. In greedy mode every test is a row. `removed_in_step` holds the species tested. `kept_back` is true when the species stays because its removal breaks the tolerance. The JSON `removal_order` then lists the accepted removals in their order, and `rank_removal_order` the rank.
 
 In `lk_greedy` mode, every test is also a row. `removed_in_step` lists every species of the tested piece or block, and `rank_removal_order` holds the LK order. Each JSON row also holds `pass`, `test` (`single`, `unit` or `block`) and `tolerance`. The JSON `search.passes` gives the size, the kept pieces and the untested pieces after each pass.
 
@@ -347,7 +370,7 @@ The search stops at `reduction.min_species`, at the end of the rank, or after `r
 
 ### Linearised knockout and chain units
 
-The LK stage runs in `gasig run` after the rank, when `lk.enabled` is true. For each species, it removes the reactions of that species. Then it integrates the linearised change of the mass fractions along each screened idt trajectory, up to the sample at `lk.sample_fraction`. It does not solve the reactor again. The LK score of a species is the largest estimated shift of the ignition delay time over the screened trajectories. Each shift is a fraction of the ignition delay time of its trajectory. The LK order sorts the species from the smallest to the largest score; equal scores keep the GA-SiG order. The stage runs on the CPU in float64, for every value of `device`.
+The LK stage runs in `gasig run` after the rank, when `lk.enabled` is true. For each species, it removes the reactions of that species. Then it integrates the linearised change of the mass fractions along each screened idt trajectory, up to the sample at `lk.sample_fraction`. It does not solve the reactor again. The LK score of a species is the largest absolute value of the estimated shift of the ignition delay time over the screened trajectories. Each shift is a signed fraction of the ignition delay time of its trajectory; `lk_scores.npy` holds the signed shifts. The LK order sorts the species from the smallest to the largest score; equal scores keep the GA-SiG order. The stage runs on the CPU in float64, for every value of `device`.
 
 A chain unit is a sequence of species in which each member has one significant production reaction and one significant consumption reaction. The consumption reaction of each member is the production reaction of the next member. The removal of one member cuts the sequence, so the `lk_greedy` search removes a unit as one piece. The detection stage runs in `gasig run` when `units.detect` is true. It uses the reaction extents along the idt trajectories.
 
@@ -423,18 +446,23 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 | `no chain units: ... is missing` in `reduce.log` | The run had no detection stage, and `reduction.search.units` is `null` | No action is necessary: every species is its own piece. To use units, set `units.detect` to true. Then run `gasig run config.json --stage units` |
 | `device 'cuda' was requested but CUDA is not available` | No GPU, no driver, or the container has no `--gpus all` | Set `device` to `auto` or `cpu`, or add `--gpus all` |
 | `The torch rate law does not reproduce Cantera` | The mechanism has a reaction type that the corrected rate law does not support | Report the reaction named in the message, or use `rate_law: "original"` |
+| `'ranking.target_species' is empty` or `No name in 'ranking.target_species' is a species of the mechanism` | The rank has no valid target species. The run stops before the sensitivity integration | Name at least one species of the mechanism in `ranking.target_species` |
+| `'ranking.combine' ... needs ...` | `ranking.combine` names a mode that is not enabled | Enable the mode, or change `ranking.combine`. `auto` ranks the enabled modes |
 | `the reference species ... peaks at the first sample` | The reference species is a reactant or a diluent | Use a radical such as `OH`, or `ignition_criterion: "max_dTdt"` |
+| `the reactor ignited ... but the mechanism does not form the reference species` | The mechanism has no formation path of the reference species. For the detailed mechanism, the run stops. For a reduced mechanism, the condition counts as failed in `gasig reduce` and gets no value in `gasig report` | Choose a reference species that the detailed mechanism forms, for example `OH`, or set `ignition_criterion: "max_dTdt"` |
+| `the reference species has no peak inside the ignition event` in the log | The reference species still rises after the ignition event. A local maximum later than 2 times the heat-release time is drift, not ignition. The ignition sample is the temperature peak, or the mean of the two steepest rises when the temperature also has no peak in the event | No action is necessary. For a sharper criterion, choose another reference species or set `ignition_criterion: "max_dTdt"` |
 | `no ignition detected` in the log | The reactor did not ignite before `end_time_s` | Increase `end_time_s`, or set `skip_unignited` to true |
 | `u must be positive everywhere` | The profile is not a freely propagating flame in the flame-fixed frame | Supply a `FreeFlame` or `BurnerFlame` profile |
 | `The temperature reaches ... at the first point already` | A flat or decreasing precomputed profile, or a low `flame_tip_T_fraction` | Supply the profile from the unburnt inlet, or raise the fraction |
 | `reduction.keep_species names species that are not in the mechanism` | A name in the keep list has a typo | Correct the name |
 | `The mechanism has species that are not in the rank file` | The rank comes from another mechanism | Run `gasig rank` with this mechanism, then `gasig reduce` |
 | `conditions do not ignite with the detailed mechanism` | `end_time_s` or `max_steps` is too small for the evaluation conditions | Raise them in `reduction.idt`, or change the conditions |
+| `reduction_sweep.json has the status ...: the sweep did not complete` in `report.log` | `gasig reduce` stopped before the end of the sweep. The report uses only the evaluated sizes | Run `gasig reduce` again, then `gasig report` |
 | `no evaluated mechanism is within the tolerance` in the log | Every reduced size exceeds `reduction.error_tolerance` | Raise the tolerance, lower `reduction.min_species`, or rank with other targets |
 | `Matplotlib is not installed` in the log | The report extra is not installed | `pip install ".[report]"`; the tables are written in every case |
 | `Zero-RK is not available` | The image was built with `--target gasig`, or `fs.solver.zerork.home` is wrong | Build the full CPU image, or point `home` or `ZERORK_HOME` at a Zero-RK install |
 | `the flame solver failed` in `reduce.log` or in the report log | Zero-RK gave no flame at this condition after the serial retry; the condition gets `inf` (`gasig reduce`) or no value (`gasig report`). A `gave no flame` line of an MPI attempt, followed by `the serial solver repeats it` or `the pseudo-unsteady solver continues`, is normal | Set `fs.solver.zerork.work_dir` to a folder in the run folder and `keep_files` to true. Read `log_<n>`, `log_<n>s` and `log_<n>p` in the subfolder of the flame. Change `rel_tol` or `processes` |
-| `Error: ...` with exit code 3 | A run-time error in a solver or in the data | Read the message; set `GASIG_DEBUG=1` for the traceback; `reduce.log` and `report.log` hold the traceback |
+| `Error: ...` with exit code 3 | A run-time error in a solver or in the data | Read the message; set `GASIG_DEBUG=1` for the traceback; `reduce.log` and `report.log` hold the traceback. The failure file (`*.failures.jsonl`) in the output folder records the error with its stage and context |
 | Out of GPU memory | The mechanism is too large for the GPU | Use a larger GPU or `device: "cpu"` |
 | The GPU run is slower than the CPU run | The card computes double precision slowly (consumer cards) | Use `device: "cpu"`; on an RTX 2050 the CPU was faster up to 745 species |
 

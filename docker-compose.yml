@@ -1,8 +1,8 @@
 # Two ways to run GA-SiG in a container. Both mount the example folder as the
 # run folder; change the volume to point at your own run folder.
 #
-#   docker compose run --rm gasig run config_ch4_solver.json
-#   docker compose run --rm gasig-cpu run config_ch4_solver.json
+#   docker compose run --rm gasig run methane/config_ch4_solver.json
+#   docker compose run --rm gasig-cpu run methane/config_ch4_solver.json
 services:
   gasig:
     build: .

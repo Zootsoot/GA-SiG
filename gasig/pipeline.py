@@ -187,19 +187,38 @@ def run_mode(mode: str, cfg: dict, kin: TorchKinetics, out_dir: Path, keep: dict
 
 
 def _modes_for_ranking(cfg: dict) -> list[str]:
-    """The modes whose r_AB files the ranking needs, from ``ranking.combine``."""
+    """The modes whose r_AB files the ranking needs, from ``ranking.combine``.
+
+    Only enabled modes are returned. An r_AB file of a disabled mode can stay in output_dir from an
+    earlier run; the rank stage must not read it.
+    """
     combine = cfg["ranking"]["combine"]
     enabled = [m for m in ("idt", "fs") if cfg[m]["enabled"]]
     if combine == "auto":
         return enabled
-    if combine == "hybrid":
-        return ["idt", "fs"]
-    return [combine]
+    needed = ["idt", "fs"] if combine == "hybrid" else [combine]
+    disabled = [m for m in needed if m not in enabled]
+    if disabled:
+        raise ConfigError(f"'ranking.combine' {combine} needs the disabled mode(s) {disabled}; enable them or "
+                          "change 'ranking.combine'.", stage="rank", combine=combine, disabled=disabled)
+    return needed
+
+
+def _check_targets_known(cfg: dict, species_names: list[str]) -> None:
+    """Stop the run when no target species is a species of the mechanism."""
+    names = cfg["ranking"]["target_species"]
+    if not names:
+        raise ConfigError("'ranking.target_species' is empty; name at least one species of the mechanism.",
+                          stage="rank")
+    if not set(names) & set(species_names):
+        raise ConfigError("No name in 'ranking.target_species' is a species of the mechanism.",
+                          stage="rank", target_species=list(names))
 
 
 def rank(cfg: dict, species_names: list[str], out_dir: Path) -> dict:
     """Graph search on the per-mode matrices of ``out_dir``; writes the ranking files."""
     rcfg = cfg["ranking"]
+    _check_targets_known(cfg, species_names)
     matrices = {}
     for mode in _modes_for_ranking(cfg):
         path = out_dir / f"r_AB_{mode}.npy"
@@ -213,8 +232,6 @@ def rank(cfg: dict, species_names: list[str], out_dir: Path) -> dict:
                          stage="rank", shape=list(R.shape), n_species=len(species_names))
 
     targets = resolve_targets(species_names, rcfg["target_species"])
-    if not targets:
-        log.warning("No valid target species; every importance index is zero.")
     importance = overall_importance(R, targets, rcfg["eps_edge"])
     ranked = rank_species(species_names, importance)
 
@@ -305,6 +322,11 @@ def _run_stages(cfg: dict, config_path: Path, out_dir: Path, stage: str, t0: flo
         "units": previous.get("units") if stage in ("rank", "lk") else None,
     }
     trajectories: dict = {}
+    if stage in ("all", "rank"):
+        # Stop before the sensitivity stage, not after it.
+        _modes_for_ranking(cfg)
+        if not cfg["ranking"]["target_species"]:
+            _check_targets_known(cfg, [])
 
     if stage in ("all", "sensitivity"):
         with (out_dir / "config_resolved.json").open("w", encoding="utf-8") as fh:
@@ -325,6 +347,8 @@ def _run_stages(cfg: dict, config_path: Path, out_dir: Path, stage: str, t0: flo
         summary["mechanism"] = kin.describe()
         log.info("mechanism: %d species, %d reactions, %d three-body, %d irreversible",
                  kin.Ns, kin.Nr, kin.n_three_body, summary["mechanism"]["n_irreversible"])
+        if stage == "all":
+            _check_targets_known(cfg, kin.species_names)
         for mode in ("idt", "fs"):
             if cfg[mode]["enabled"]:
                 summary["modes"][mode] = run_mode(mode, cfg, kin, out_dir, keep=trajectories)

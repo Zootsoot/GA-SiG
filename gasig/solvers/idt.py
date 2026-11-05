@@ -53,14 +53,16 @@ def ignition_sample(t: np.ndarray, T: np.ndarray, ref: np.ndarray, criterion: st
 
     1. A detected peak of the reference species is the ignition: the global
        maximum when it lies inside the ignition event, else the first local
-       maximum at or after the heat-release peak. A maximum at the last sample,
-       or later than ``POST_IGNITION_FACTOR`` times the time of the
-       heat-release peak, lies after the event (post-ignition drift).
-    2. When the reference species grows until the end, the temperature peak
-       inside the event is the ignition.
-    3. When the temperature also grows until the end, the ignition time is
-       the mean of the times of the steepest rise of the reference species
-       and of the temperature; the ignition sample is the nearest sample.
+       maximum at or after the heat-release peak that lies inside the event.
+       A maximum at the last sample, or later than ``POST_IGNITION_FACTOR``
+       times the time of the heat-release peak, lies after the event
+       (post-ignition drift). The search ignores such a late maximum.
+    2. When the reference species has no peak inside the event, the
+       temperature peak inside the event is the ignition.
+    3. When the temperature also has no peak inside the event, the ignition
+       time is the mean of the times of the steepest rise of the reference
+       species and of the temperature; the ignition sample is the nearest
+       sample.
 
     Without ignition, or when the reference species peaks at the first
     sample, the global maximum is returned as before.
@@ -84,21 +86,24 @@ def ignition_sample(t: np.ndarray, T: np.ndarray, ref: np.ndarray, criterion: st
     # Rule 1: a detected peak of the reference species.
     if not late(i_peak):
         return i_peak, float(t[i_peak]), None
+    # The search stops at the first late sample: a local maximum after the event is drift, not ignition.
     for k in range(i_heat, N - 1):
+        if late(k):
+            break
         if ref[k] >= ref[k + 1]:
             return k, float(t[k]), (f"the reference species peaks at t={t[i_peak]:.3e} s, after the ignition event; "
                                     f"the ignition sample is its first peak after the heat-release peak, t={t[k]:.3e} s")
-    # Rule 2: the reference species grows until the end; the temperature peak.
+    # Rule 2: the reference species has no peak inside the event; the temperature peak.
     i_T = int(np.argmax(T))
     if not late(i_T):
-        return i_T, float(t[i_T]), (f"the reference species rises until the end (t={t[i_peak]:.3e} s); "
-                                    f"the ignition sample is the temperature peak, t={t[i_T]:.3e} s")
-    # Rule 3: both grow until the end; the mean of the two steepest rises.
+        return i_T, float(t[i_T]), (f"the reference species has no peak inside the ignition event (maximum at "
+                                    f"t={t[i_peak]:.3e} s); the ignition sample is the temperature peak, t={t[i_T]:.3e} s")
+    # Rule 3: neither has a peak inside the event; the mean of the two steepest rises.
     i_dref = int(np.argmax(np.gradient(ref, t, edge_order=1)))
     tau = 0.5 * (float(t[i_dref]) + float(t[i_heat]))
     i_ign = int(np.argmin(np.abs(t - tau)))
-    return i_ign, tau, (f"the reference species and the temperature rise until the end; the ignition time is the "
-                        f"mean of their steepest rises, t={t[i_dref]:.3e} s and t={t[i_heat]:.3e} s")
+    return i_ign, tau, (f"the reference species and the temperature have no peak inside the ignition event; the "
+                        f"ignition time is the mean of their steepest rises, t={t[i_dref]:.3e} s and t={t[i_heat]:.3e} s")
 
 
 def idt_conditions(solver_cfg: dict) -> list[tuple[float, float, float]]:
@@ -204,6 +209,15 @@ def run_idt(
     if note:
         log.warning("%s: %s", label, note)
     if i_ign == 0 and T_rise >= MIN_TEMPERATURE_RISE_K and solver_cfg["ignition_criterion"] == "reference_peak":
+        # A reference species that is absent at t = 0 and peaks there never forms. A reduced mechanism
+        # can lose all its formation paths; a solver error then lets the sweep count the condition as failed.
+        if not ref_hist[0] > 0.0:
+            raise IgnitionSolverError(
+                f"{label}: the reactor ignited (temperature rise {T_rise:.0f} K) but the mechanism does not form "
+                f"the reference species '{ref}'; no ignition sample is available.",
+                label=label or None, species=str(ref), T0_K=float(T0), P0_atm=float(P0) / ct.one_atm,
+                phi=float(phi), n_species=int(gas.n_species), temperature_rise_K=T_rise,
+            )
         raise ConfigError(
             f"{label}: the reactor ignited (temperature rise {T_rise:.0f} K) but the reference species "
             f"'{ref}' peaks at the first sample; it is a reactant or a diluent. Choose a radical such as OH "

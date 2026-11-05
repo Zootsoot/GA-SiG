@@ -173,3 +173,58 @@ def test_cli_reports_config_errors(tmp_path, capsys):
     assert main(["run", str(bad)]) == 2
     assert "sovler" in capsys.readouterr().err
     assert main(["run", str(tmp_path / "missing.json")]) == 2
+
+
+def _rank_config(tmp_path, mech_path, **ranking):
+    from gasig.config import validate_config
+
+    raw = json.loads(write_config(tmp_path / "rank.json", mech_path).read_text(encoding="utf-8"))
+    raw["ranking"].update(ranking)
+    return validate_config(raw, tmp_path)
+
+
+def test_rank_does_not_read_the_matrix_of_a_disabled_mode(tmp_path, mech_path):
+    """A stale r_AB_fs.npy of an earlier run must not enter the rank of an idt-only configuration."""
+    from gasig.errors import ConfigError
+    from gasig.pipeline import rank
+
+    names = list(ct.Solution(mech_path).species_names)
+    n = len(names)
+    out = tmp_path / "out"
+    out.mkdir()
+    np.save(out / "r_AB_idt.npy", np.eye(n))
+    np.save(out / "r_AB_fs.npy", np.full((n, n), 1.0 / n))       # stale file of an earlier run
+    cfg = _rank_config(tmp_path, mech_path, combine="hybrid")
+    cfg["fs"]["enabled"] = False                                  # bypass the configuration check
+    with pytest.raises(ConfigError, match="disabled mode"):
+        rank(cfg, names, out)
+    assert not (out / "ranked_species.csv").exists()
+    cfg["ranking"]["combine"] = "auto"
+    assert rank(cfg, names, out)["matrix"] == "idt"
+
+
+def test_rank_needs_a_target_species_of_the_mechanism(tmp_path, mech_path):
+    from gasig.errors import ConfigError
+    from gasig.pipeline import rank
+
+    names = list(ct.Solution(mech_path).species_names)
+    out = tmp_path / "out"
+    out.mkdir()
+    np.save(out / "r_AB_idt.npy", np.eye(len(names)))
+    np.save(out / "r_AB_fs.npy", np.eye(len(names)))
+    with pytest.raises(ConfigError, match="'ranking.target_species' is empty"):
+        rank(_rank_config(tmp_path, mech_path, target_species=[]), names, out)
+    with pytest.raises(ConfigError, match="No name in 'ranking.target_species'"):
+        rank(_rank_config(tmp_path, mech_path, target_species=["ch4", "XYZ"]), names, out)
+    assert not (out / "ranked_species.csv").exists()
+
+
+def test_run_stops_on_bad_targets_before_the_sensitivity_stage(tmp_path, mech_path, capsys):
+    """The run must stop with exit 2 before the integration, not after it."""
+    config = write_config(tmp_path / "config.json", mech_path, ranking={"target_species": ["ch4"]})
+    assert main(["run", str(config)]) == 2
+    assert "No name in 'ranking.target_species'" in capsys.readouterr().err
+    assert not (tmp_path / "out" / "r_AB_idt.npy").exists()
+    config = write_config(tmp_path / "config.json", mech_path, ranking={})
+    assert main(["run", str(config), "--stage", "rank"]) == 2
+    assert "'ranking.target_species' is empty" in capsys.readouterr().err

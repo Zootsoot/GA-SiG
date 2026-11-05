@@ -33,9 +33,11 @@ import hashlib
 import logging
 import math
 import os
+import secrets
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import tempfile
@@ -75,7 +77,31 @@ class ChemkinFiles:
 CHEMKIN_CACHE_SIZE = 2          # the detailed mechanism and the current candidate
 _CHEMKIN_CACHE: "OrderedDict[tuple, ChemkinFiles]" = OrderedDict()
 _OWNED_FOLDERS: set[Path] = set()   # CHEMKIN folders this process created; removed on eviction and at exit
-_RUN_FOLDER = f"run-{os.getpid()}"  # the subfolder of work_dir that holds the flames of this process
+_RUN_NAMES: dict[int, str] = {}     # PID -> name of the run folder of that process in work_dir
+_RUN_ROOTS: set[Path] = set()       # run folders this process created; removed at exit when they are empty
+
+
+def run_folder_name() -> str:
+    """The subfolder of ``work_dir`` for this process, ``run-<host>-<pid>-<token>``.
+
+    The PID alone is not unique: every Docker container starts the package
+    as PID 1. The host name (the container ID in Docker) and a random token
+    make the name unique, so two runs that share ``work_dir`` do not delete
+    each other's files. A forked child gets a new name.
+    """
+    pid = os.getpid()
+    if pid not in _RUN_NAMES:
+        host = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in socket.gethostname()) or "host"
+        _RUN_NAMES[pid] = f"run-{host[:40]}-{pid}-{secrets.token_hex(4)}"
+    return _RUN_NAMES[pid]
+
+
+def _run_root(zcfg: dict) -> Path:
+    """``<work_dir>/<run folder>``; the folder is created and recorded for the clean-up at exit."""
+    root = Path(zcfg["work_dir"]) / run_folder_name()
+    root.mkdir(parents=True, exist_ok=True)
+    _RUN_ROOTS.add(root)
+    return root
 
 
 SEED_LIMIT = 32                 # solved flames kept in memory as initial guesses (continuation)
@@ -141,6 +167,13 @@ def _remove_owned_folders() -> None:
     for folder in list(_OWNED_FOLDERS):
         shutil.rmtree(folder, ignore_errors=True)
     _OWNED_FOLDERS.clear()
+    for root in list(_RUN_ROOTS):           # rmdir removes empty folders only: kept files stay
+        for folder in (root / "mechanisms", root):
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+    _RUN_ROOTS.clear()
 
 
 atexit.register(_remove_owned_folders)
@@ -258,11 +291,15 @@ def chemkin_files(gas: ct.Solution, folder: Path | None = None, keep: bool = Fal
 
 
 def _mechanism_folder(zcfg: dict, gas: ct.Solution) -> Path | None:
-    """``<work_dir>/mechanisms/<n>sp_<hash>`` for the CHEMKIN files when ``work_dir`` is set, else None."""
+    """``<work_dir>/<run folder>/mechanisms/<n>sp_<hash>`` for the CHEMKIN files when ``work_dir`` is set, else None.
+
+    The folder is in the run folder of this process: no other process
+    removes it while the solver of this process reads the files.
+    """
     if not zcfg.get("work_dir"):
         return None
     digest = hashlib.sha1(repr(_mechanism_key(gas)).encode("utf-8")).hexdigest()[:10]
-    return Path(zcfg["work_dir"]) / "mechanisms" / f"{gas.n_species}sp_{digest}"
+    return _run_root(zcfg) / "mechanisms" / f"{gas.n_species}sp_{digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -691,14 +728,15 @@ def _composition(value: dict) -> dict:
 
 
 def _work_dir(zcfg: dict, label: str) -> tuple[Path, bool]:
-    """The folder of one flame, ``<work_dir>/run-<pid>/<label>``; the second value says whether it is removed.
+    """The folder of one flame, ``<work_dir>/<run folder>/<label>``; the second value says whether it is removed.
 
-    The process-specific folder keeps a sweep and a report that share
-    ``work_dir`` from deleting each other's files.
+    The run folder (:func:`run_folder_name`) is unique per process, also in
+    Docker. So a sweep and a report that share ``work_dir`` do not delete
+    each other's files.
     """
     safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in label) or "flame"
     if zcfg.get("work_dir"):
-        folder = Path(zcfg["work_dir"]) / _RUN_FOLDER / safe
+        folder = _run_root(zcfg) / safe
         if folder.exists():
             shutil.rmtree(folder)
         folder.mkdir(parents=True)

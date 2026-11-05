@@ -44,8 +44,10 @@ def test_report_compares_the_selected_mechanism(swept):
     report_dir = out / "report"
     text = (report_dir / "report.md").read_text(encoding="utf-8")
     assert "| Selected mechanism | 61 species" in text and "Table 3" in text
+    assert "| Sweep status | complete |" in text and "Warning" not in text
     saved = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
     assert saved["selected"]["n_species"] == 61 and len(saved["idt"]) == 3
+    assert saved["sweep_status"] == "complete" and saved["sweep_complete"] is True
     if HAS_MPL:
         assert (report_dir / "error_vs_species.png").is_file()
         assert (report_dir / "idt_comparison.png").is_file()
@@ -73,6 +75,27 @@ def test_report_survives_a_solver_failure_on_a_grid_point(swept, monkeypatch, ca
     assert failed[0]["idt_detailed_s"] is not None
     assert "the integrator failed" in caplog.text
     assert (out / "report" / "report.md").is_file()
+
+
+def test_report_warns_about_an_incomplete_sweep(swept, caplog):
+    """A sweep cut off after two sizes keeps the status 'running' and has no selection; the report says so."""
+    import logging
+
+    cfg, out, data = swept
+    partial = {k: v for k, v in data.items() if k != "selection"}
+    partial["status"] = "running"
+    partial["rows"] = sorted(data["rows"], key=lambda r: -r["n_species"])[:2]          # 111 and 61 species
+    with caplog.at_level(logging.INFO, logger="gasig.report"):
+        result = build_report(cfg, out, partial)
+    assert result["selected"]["n_species"] == 61
+    assert result["sweep_status"] == "running" and result["sweep_complete"] is False
+    assert "has the status 'running': the sweep did not complete" in caplog.text
+    assert "the tolerance or the window differs" not in caplog.text
+    text = (out / "report" / "report.md").read_text(encoding="utf-8")
+    assert "**Warning:** the sweep did not complete (status `running`)" in text
+    assert "| Sweep status | running: the sweep did not complete |" in text
+    saved = json.loads((out / "report" / "report.json").read_text(encoding="utf-8"))
+    assert saved["sweep_status"] == "running" and saved["sweep_complete"] is False
 
 
 def test_report_without_a_mechanism_within_tolerance(swept, tmp_path, mech_path):

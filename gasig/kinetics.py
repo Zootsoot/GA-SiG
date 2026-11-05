@@ -211,7 +211,15 @@ class TorchKinetics:
         magnitude (with a floor of 1e-12 of the largest rate). Returns the
         largest relative deviation. A mismatch means the mechanism uses a
         reaction type that this rate law does not reproduce.
+
+        The comparison always runs in float64. For a different dtype, a
+        float64 copy of this rate law on the CPU does the check. Thus the
+        tolerance tests the rate law, not the rounding of the run dtype.
         """
+        if self.dtype != torch.float64:
+            twin = TorchKinetics(self.mech_file, self.phase_name, device="cpu", dtype=torch.float64,
+                                 concentration_floor=self.floor, rate_law=self.rate_law, self_check=False)
+            return twin.self_check(T=T, P=P, rtol=rtol)
         Y = np.full(self.Ns, 1.0 / self.Ns)
         kf, kr = self.rate_constants(T, P, Y)
         Y_t = torch.tensor(Y, dtype=self.dtype, device=self.device)

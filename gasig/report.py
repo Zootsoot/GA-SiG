@@ -16,6 +16,11 @@ in the output folder:
 * the selected mechanism as a Cantera YAML file, when the sweep did not
   write it
 
+A sweep that did not complete (an interrupted or failed ``gasig reduce``)
+has a status other than ``complete``. The report then selects only from
+the evaluated sizes. It logs a warning, puts a warning in ``report.md`` and
+sets ``sweep_complete`` to false in ``report.json``.
+
 The module needs Cantera and NumPy; the figures need Matplotlib.
 """
 from __future__ import annotations
@@ -172,12 +177,20 @@ def build_report(cfg: dict, out_dir: Path, data: dict) -> dict:
             r["max_idt_error"] = float("inf")
     errors = {r["n_species"]: r["max_idt_error"] for r in rows if not r.get("kept_back")}
     mode = data.get("search", {}).get("mode", "full")
+    # An interrupted or failed sweep leaves a status other than 'complete' and no selection.
+    status = str(data.get("status") or "unknown")
+    complete = status == "complete"
+    if not complete:
+        log.warning("reduction_sweep.json has the status '%s': the sweep did not complete. The report selects "
+                    "only from the %d evaluated sizes. A smaller mechanism within the tolerance can exist. "
+                    "Run 'gasig reduce' again to complete the sweep.", status, len(rows))
     stored = data.get("selection") or {}
     if data.get("error_tolerance") == tol and stored.get("robust_window") == window:
         strict, robust = stored.get("strict_optimum"), stored.get("robust_optimum")
     else:
-        log.info("the tolerance or the window differs from the sweep; the optima are selected again "
-                 "from the evaluated sizes.")
+        if complete:
+            log.info("the tolerance or the window differs from the sweep; the optima are selected again "
+                     "from the evaluated sizes.")
         strict, robust = select_optima(errors, tol, window, require_full_window=(mode == "adaptive"))
     selected = robust if robust is not None else strict
     by_size = {r["n_species"]: r for r in rows}
@@ -190,6 +203,7 @@ def build_report(cfg: dict, out_dir: Path, data: dict) -> dict:
     result: dict = {
         "mechanism": cfg["mechanism"], "n_species_full": N, "n_reactions_full": data["n_reactions_full"],
         "error_tolerance": tol, "robust_window": window, "search_mode": mode,
+        "sweep_status": status, "sweep_complete": complete,
         "sizes_evaluated": len(rows), "unresolved": data.get("search", {}).get("unresolved", []),
         "strict_optimum": None if strict is None else _size_entry(by_size[strict]),
         "robust_optimum": None if robust is None else _size_entry(by_size[robust]),
@@ -374,13 +388,19 @@ def _plot_fs(result: dict, report_dir: Path) -> dict[str, str]:
 def _markdown(result: dict, rows: list[dict], cfg: dict) -> str:
     tol = result["error_tolerance"]
     lines = [f"# Reduction report: {Path(result['mechanism']).name}", "",
-             f"Date: {time.strftime('%Y-%m-%d')}. Tool: gasig {__version__}. Status: generated.", "",
-             "## Selection", "",
-             "| Item | Value |", "|---|---|",
-             f"| Detailed mechanism | {result['n_species_full']} species, {result['n_reactions_full']} reactions |",
-             f"| Error tolerance | {100.0 * tol:.3g} % of the ignition delay time |",
-             f"| Sizes evaluated | {result['sizes_evaluated']} ({result['sizes_evaluated'] - 1} reduced mechanisms, "
-             f"{result['search_mode']} search) |"]
+             f"Date: {time.strftime('%Y-%m-%d')}. Tool: gasig {__version__}. Status: generated.", ""]
+    if not result["sweep_complete"]:
+        lines += [f"**Warning:** the sweep did not complete (status `{result['sweep_status']}`). This report uses "
+                  f"only the {result['sizes_evaluated']} evaluated sizes. A smaller mechanism within the tolerance "
+                  "can exist. Run `gasig reduce` again to complete the sweep.", ""]
+    lines += ["## Selection", "",
+              "| Item | Value |", "|---|---|",
+              f"| Detailed mechanism | {result['n_species_full']} species, {result['n_reactions_full']} reactions |",
+              f"| Sweep status | {result['sweep_status']}"
+              f"{'' if result['sweep_complete'] else ': the sweep did not complete'} |",
+              f"| Error tolerance | {100.0 * tol:.3g} % of the ignition delay time |",
+              f"| Sizes evaluated | {result['sizes_evaluated']} ({result['sizes_evaluated'] - 1} reduced mechanisms, "
+              f"{result['search_mode']} search) |"]
     for key, label in (("strict_optimum", "Strict optimum"), ("robust_optimum", f"Robust optimum (window {result['robust_window']})")):
         entry = result[key]
         value = "none" if entry is None else \

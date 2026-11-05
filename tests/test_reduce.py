@@ -241,6 +241,17 @@ def test_adaptive_search_on_methane(tmp_path, mech_path, gas, out):
     assert rows[2]["removed_in_step"].split(";") == removable[9:13]
 
 
+def test_adaptive_budget_counts_reduced_mechanisms_only(tmp_path, mech_path, out, caplog):
+    cfg = make_config(tmp_path, mech_path, reduction={"min_species": 95, "error_tolerance": 0.05,
+                                                      "search": {"mode": "adaptive", "coarse_points": 4,
+                                                                 "importance_gap_probes": 0, "max_evaluations": 2}})
+    with caplog.at_level(logging.WARNING, logger="gasig.reduce"):
+        summary = sweep(cfg, out)
+    assert [r["n_species"] for r in summary["rows"]] == [111, 102, 97]     # two reduced sizes, as configured
+    assert summary["search"]["evaluations"] == 2 and summary["search"]["budget_exhausted"] is True
+    assert "evaluation budget of 2" in caplog.text
+
+
 def test_adaptive_search_probes_the_importance_gaps(tmp_path, mech_path, gas):
     out = tmp_path / "out"
     out.mkdir()
@@ -349,6 +360,43 @@ def test_solver_failure_counts_as_a_failed_condition(tmp_path, mech_path, out, m
         sweep(cfg, out)
     assert isinstance(info.value.__cause__, ct.CanteraError)
     assert info.value.stage == "reduce" and info.value.context["label"] == "full-c0"
+
+
+def test_reference_species_that_is_not_formed_counts_as_a_failed_condition(tmp_path, mech_path, out, monkeypatch):
+    """run_idt raises a ConfigError when the reactor ignites and the reference species peaks at t = 0.
+
+    For a reduced mechanism this means that no kept reaction forms the reference species: the condition
+    counts as failed and the sweep continues. For the detailed mechanism the error stays fatal.
+    """
+    import gasig.reduce as module
+
+    real_run_idt = module.run_idt
+
+    def no_reference(label):
+        return ConfigError(f"{label}: the reactor ignited (temperature rise 1245 K) but the reference species "
+                           "'OH' peaks at the first sample; it is a reactant or a diluent.",
+                           label=label, species="OH", temperature_rise_K=1245.0)
+
+    def lost_reference(mech_file, phase_name, T0, P0, phi, solver_cfg, label="", gas=None):
+        if label.startswith("n61"):
+            raise no_reference(label)
+        return real_run_idt(mech_file, phase_name, T0, P0, phi, solver_cfg, label=label, gas=gas)
+
+    monkeypatch.setattr(module, "run_idt", lost_reference)
+    cfg = make_config(tmp_path, mech_path, reduction={"step": 50, "min_species": 11, "error_tolerance": 0.05})
+    summary = sweep(cfg, out)
+    rows = summary["rows"]
+    assert [r["n_species"] for r in rows] == [111, 61, 11]                 # the sweep continues after 61
+    assert rows[1]["n_solver_failures"] == 1 and rows[1]["max_idt_error"] == float("inf")
+    assert rows[1]["n_unignited"] == 0 and rows[1]["complete"] is True
+    assert summary["status"] == "complete" and summary["failures"] == {"ignition solver": 1}
+
+    def fatal(mech_file, phase_name, T0, P0, phi, solver_cfg, label="", gas=None):
+        raise no_reference(label)
+
+    monkeypatch.setattr(module, "run_idt", fatal)
+    with pytest.raises(ConfigError, match="peaks at the first sample"):
+        sweep(cfg, out)
 
 
 def test_run_reduce_records_solver_failures_in_the_failure_file(tmp_path, mech_path, gas, out, monkeypatch):

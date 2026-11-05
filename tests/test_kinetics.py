@@ -151,6 +151,19 @@ def test_float32_original_law_stays_finite_with_absent_species(mech_path, states
                       concentration_floor=1e-300)
 
 
+def test_float32_corrected_law_passes_self_check(kin, mech_path, states):
+    """The start-up self-check runs in float64, so float32 rounding does not fail it."""
+    k32 = TorchKinetics(mech_path, device="cpu", dtype=torch.float32, rate_law="corrected")
+    assert k32.self_check() == kin.self_check() < 1e-10
+    assert k32.self_check(rtol=1e-8) < 1e-8          # the float64 tolerance stays as strict
+    T, P, Y = states[1]
+    kf, kr = k32.rate_constants(T, P, Y)
+    assert kf.dtype == torch.float32
+    with torch.no_grad():
+        dYdt, _ = k32.rhs(torch.tensor(Y, dtype=torch.float32), T, P, kf, kr)
+    assert dYdt.dtype == torch.float32 and torch.isfinite(dYdt).all()
+
+
 def test_J1_mass_action_part_matches_cantera_derivatives(kin, states, mech_path):
     """d(omega_a)/dC_i from the torch rate law equals Cantera's net_production_rates_ddCi
     (derivative with respect to each species concentration at constant T, P and the other

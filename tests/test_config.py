@@ -160,3 +160,30 @@ def test_schema_rows_cover_every_leaf():
     for expected in ("mechanism", "sensitivity.rate_law", "idt.solver.fuel", "fs.precomputed.velocity",
                      "aggregation.normalization", "ranking.hybrid_weight_idt"):
         assert expected in keys
+
+
+def test_combine_must_name_enabled_modes(tmp_path):
+    """A matrix of a disabled mode can stay in output_dir from an earlier run; the rank must not use it."""
+    with pytest.raises(ConfigError, match="'ranking.combine' hybrid needs both"):
+        validate_config(minimal(ranking={"combine": "hybrid"}), tmp_path)
+    with pytest.raises(ConfigError, match="'ranking.combine' fs needs 'fs.enabled' true"):
+        validate_config(minimal(ranking={"combine": "fs"}), tmp_path)
+    fs = {"enabled": True, "solver": {"fuel": {"CH4": 1.0}, "oxidizer": {"O2": 1.0}, "P_atm": [1], "phi": [1.0]}}
+    with pytest.raises(ConfigError, match="'ranking.combine' idt needs 'idt.enabled' true"):
+        validate_config({"mechanism": "m.yaml", "fs": fs, "ranking": {"combine": "idt"}}, tmp_path)
+    for combine in ("auto", "idt"):
+        assert validate_config(minimal(ranking={"combine": combine}), tmp_path)["ranking"]["combine"] == combine
+    both = validate_config(minimal(fs=fs, ranking={"combine": "hybrid"}), tmp_path)
+    assert both["ranking"]["combine"] == "hybrid"
+
+
+def test_shipped_example_configs_validate():
+    """Every configuration file of the example folder passes the validation."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "example"
+    paths = sorted(p for p in root.rglob("*.json") if not any(part.startswith("results") for part in p.parts))
+    assert len(paths) >= 10
+    for path in paths:
+        cfg = load_config(path)
+        assert cfg["ranking"]["target_species"], path

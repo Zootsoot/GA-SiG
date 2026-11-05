@@ -7,6 +7,7 @@ runs only where Zero-RK is installed (marker ``zerork``; the CPU image
 """
 import json
 import math
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -358,6 +359,36 @@ def test_missing_mpi_launcher_falls_back_to_the_serial_solver(tmp_path, mech_pat
     assert seen["processes"] == 1
 
 
+def test_run_folders_of_two_pid_1_processes_do_not_collide(tmp_path, monkeypatch):
+    """Two Docker containers both run as PID 1; they share work_dir but not the flame and CHEMKIN folders."""
+    monkeypatch.setattr(zerork.os, "getpid", lambda: 1)
+    monkeypatch.setattr(zerork, "_RUN_NAMES", {})
+    monkeypatch.setattr(zerork, "_RUN_ROOTS", set())
+    monkeypatch.setattr(zerork, "_OWNED_FOLDERS", set())
+    zcfg = {"work_dir": str(tmp_path / "zr"), "keep_files": False}
+    gas = ct.Solution("h2o2.yaml")
+
+    name_a = zerork.run_folder_name()
+    assert name_a == zerork.run_folder_name() and name_a.startswith("run-") and "-1-" in name_a
+    work_a, remove = zerork._work_dir(zcfg, "full-f0")
+    mech_a = zerork._mechanism_folder(zcfg, gas)
+    (work_a / "log").write_text("A")
+    assert remove and work_a.parent.name == name_a and mech_a.parent.parent.name == name_a
+
+    zerork._RUN_NAMES.clear()                                   # the second container: PID 1 again
+    name_b = zerork.run_folder_name()
+    work_b, _ = zerork._work_dir(zcfg, "full-f0")
+    mech_b = zerork._mechanism_folder(zcfg, gas)
+    assert name_b != name_a and work_b != work_a and mech_b != mech_a
+    assert (work_a / "log").read_text() == "A"                  # the second run does not remove the first one's flame
+
+    # Clean-up at exit: empty run folders go, a folder with kept files stays.
+    shutil.rmtree(work_b)
+    zerork._remove_owned_folders()
+    assert not (tmp_path / "zr" / name_b).exists()
+    assert (work_a / "log").is_file()
+
+
 def test_processes_default_is_at_most_eight(monkeypatch):
     monkeypatch.setattr(zerork.os, "sched_getaffinity", lambda pid: set(range(32)), raising=False)
     assert zerork._processes({"processes": None}) == 8
@@ -389,6 +420,6 @@ def test_methane_flame_zerork_against_cantera(tmp_path, mech_path):
     # Zero-RK's CHEMKIN parser uses the 2007 atomic weights (C 12.0107, H 1.00794, O 15.9994, N 14.0067);
     # Cantera 3 uses 12.011, 1.008, 15.999, 14.007: the inlet mass fractions differ by up to 8.2e-6 (O2).
     assert np.abs(zr.Y[0] - cf.Y[0]).max() < 2e-5                     # the same inlet mixture, up to the weights
-    work = tmp_path / "zr" / zerork._RUN_FOLDER / "zr-f0"
+    work = tmp_path / "zr" / zerork.run_folder_name() / "zr-f0"
     assert (work / "log").is_file() and (work / "Lewis_file").is_file() and (work / "input.yml").is_file()
     assert json.loads(json.dumps({"S_L": sl_zr}))["S_L"] == sl_zr

@@ -1,6 +1,6 @@
 # GA-SiG user guide
 
-Date: 2026-10-23. Version: gasig 0.2.0. Status: current.
+Date: 2026-11-05. Version: gasig 0.2.0. Status: current.
 
 ## Purpose
 
@@ -102,8 +102,9 @@ Table 1. Keys to set for a reduction
 | run, reduce | `idt.solver.preconditioner` | `adaptive` by default; `adaptive_fast` halves the solve time of large mechanisms; `none` is the dense solver |
 | run | `fs.enabled`, `fs.solver.*` | `true` and the flame conditions, when you want the flame-speed mode |
 | run, reduce, report | `fs.solver.backend` | `cantera` (the `FreeFlame`) or `zerork` (the Zero-RK steady flame solver, constant Lewis numbers, in the CPU image). Compare the time and the flame speed of the two backends on your detailed mechanism before a sweep |
-| run | `sensitivity.rate_law`, `aggregation.normalization` | `original` and `S_AB_row_sum` for the method of the paper |
-| run | `ranking.target_species` | The species that the reduction must predict, for example the fuel, O2, OH, H2O and CO2 |
+| run | `sensitivity.rate_law`, `aggregation.normalization`, `aggregation.abs_S` | `original`, `S_AB_row_sum` and `true` for the definition in the paper text. A reproduction of the published computation needs `original`, `S_row_sum` and `true` |
+| run | `ranking.target_species` | The species that the reduction must predict, for example the fuel, O2, OH, H2O and CO2. At least one name must be a species of the mechanism |
+| run | `ranking.combine` | `auto` ranks the hybrid matrix when both modes are enabled, else the enabled mode. `hybrid`, `idt` and `fs` need the modes they name to be enabled |
 | reduce | `reduction.error_tolerance` | The allowed relative error of the ignition delay time, for example `0.05` |
 | reduce | `reduction.step`, `reduction.min_species` | The sweep resolution and the smallest size |
 | reduce | `reduction.search.mode` | `full` for the whole curve; `adaptive` for large mechanisms. `greedy` and `lk_greedy` are under development; refer to section 3.4 |
@@ -145,6 +146,8 @@ To rank the same sensitivities again with other targets, change `ranking` and ru
 docker run --rm -v "${PWD}:/workspace" ga-sig:cpu rank config.json
 ```
 
+The rank stage reads only the `r_AB` files of the enabled modes. To rank a hybrid matrix from two earlier runs in the same output folder, enable both modes and run `gasig run config.json --stage rank`. The run stops with a configuration error before the sensitivity stage when `ranking.target_species` is empty or holds no species of the mechanism.
+
 ### 3.2 Reduction sweep
 
 ```bash
@@ -162,6 +165,8 @@ Two more modes, `greedy` and `lk_greedy`, are under development. Section 3.4 des
 
 With the early exit (`reduction.search.early_exit`, on by default in adaptive, greedy and lk_greedy mode), a size stops at the first condition above the tolerance. Its error in the table is then a lower bound, marked `complete: false`.
 
+A condition where the solver fails on a reduced mechanism counts as a failed condition: its error is `inf`, and `n_solver_failures` counts it. A reduced mechanism that ignites but does not form the reference species also counts as a failed condition. For the detailed mechanism, these failures stop the run. `reduce.failures.jsonl` records each failure.
+
 ### 3.3 Report
 
 ```bash
@@ -169,6 +174,8 @@ docker run --rm -v "${PWD}:/workspace" ga-sig:cpu report config.json
 ```
 
 The command reads the sweep result and selects the mechanism. It computes the ignition delay time of the detailed and the selected mechanism on `report.T_points` temperatures per pressure and equivalence ratio. It writes the folder `report/`.
+
+`gasig reduce` writes `reduction_sweep.json` with the status `running` after every size, and with the status `complete` at the end. When `reduction_sweep.json` has a status other than `complete`, the sweep did not complete. `gasig report` then selects only from the evaluated sizes. It writes a warning to `report.log` and to `report.md`, and sets `sweep_complete` to `false` in `report.json`. A smaller mechanism within the tolerance can exist. Run `gasig reduce` again to complete the sweep before you use the selected mechanism.
 
 To compare a mechanism file from another source, or an earlier result, add `--mechanism`:
 
@@ -256,16 +263,17 @@ Table 3. Files of a complete reduction
 |---|---|
 | `ranked_species.csv` | The rank, from the least to the most important species, with the importance |
 | `summary.json`, `gasig.log` | The run summary and its log |
-| `lk_order.csv`, `lk_scores.npy`, `chain_units.json` | Under development: the LK order, the LK scores per trajectory and the chain units, from `gasig run` with `lk.enabled` and `units.detect` |
+| `lk_order.csv`, `lk_scores.npy`, `chain_units.json` | Under development, from `gasig run` with `lk.enabled` and `units.detect`: the LK order with the LK scores, the signed time-shift estimate of each species per trajectory, and the chain units. The LK score of a species is the maximum of the absolute time shift over the screened trajectories |
 | `reduction_sweep.csv` | One row per evaluated size, or per test in `greedy` and `lk_greedy` mode: species, reactions, maximum and mean IDT error, unignited cases, solver failures, flame-speed error, `complete`, the species removed since the size above, `kept_back`, seconds |
 | `reduction_sweep.json` | The same rows with every ignition delay time, the removal order (the accepted removals in greedy mode, with the rank in `rank_removal_order`), the search record and the selection; written after every size, `status` is `running` until the end |
 | `reduced_<n>sp.yaml` | The selected mechanism |
 | `reduce.log` | The log of the sweep; it holds the traceback of a failure |
-| `report/report.md`, `report/report.json` | The report and its numbers |
+| `gasig.failures.jsonl`, `reduce.failures.jsonl`, `report.failures.jsonl` | The failure file beside each log: one JSON line per recorded failure, with `time`, `fatal`, `category`, `type`, `message`, `stage` and `context`. A solver failure at one condition has `fatal: false`. The error that stops a command has `fatal: true` |
+| `report/report.md`, `report/report.json` | The report and its numbers. `sweep_status` in `report.json` is the status of `reduction_sweep.json` (`complete`, `running`, or `unknown` when the file has no status). `sweep_complete` is `true` when the sweep completed |
 | `report/error_vs_species.png` | The error curve with the tolerance and the optima |
 | `report/idt_comparison.png` | The ignition delay time of the detailed mechanism (lines) and the selected mechanism (markers) |
 | `report/flame_speed_comparison.png` | The flame speed, when the sweep evaluated flames |
-| `report_<name>/`, `report_<name>.log` | The comparison of a mechanism file with the detailed mechanism, from `gasig report --mechanism` |
+| `report_<name>/`, `report_<name>.log`, `report_<name>.failures.jsonl` | The comparison of a mechanism file with the detailed mechanism, from `gasig report --mechanism` |
 
 ### The error curve and the selection
 
@@ -273,6 +281,8 @@ The error does not decrease monotonically with the number of species. Solver noi
 
 - the strict optimum: the smallest evaluated size within the tolerance
 - the robust optimum: the smallest size whose next `reduction.search.robust_window` larger sizes are also within the tolerance.
+
+The window counts evaluated sizes. With `reduction.step` above 1, it covers `robust_window` times `step` species. If no size meets the window, the package selects the strict optimum.
 
 The report selects the robust optimum. An isolated size that passes while its neighbours fail passes because of error cancellation at the evaluation conditions; do not use it at other conditions. The `selection` block of `reduction_sweep.json` holds both sizes. In adaptive mode the `search` block lists the unresolved intervals; a smaller mechanism within the tolerance can exist there. To examine one, set `reduction.min_species` and `reduction.step` to that interval and run a full sweep.
 
@@ -300,6 +310,10 @@ The README, section Problems and causes, lists the error messages and the action
 |---|---|
 | `conditions do not ignite with the detailed mechanism` | Raise `end_time_s` or `max_steps` in `reduction.idt`, or change the conditions |
 | `no evaluated mechanism is within the tolerance` in the log | Raise the tolerance, lower `reduction.min_species`, or run `gasig rank` with other targets |
+| `reduction_sweep.json has the status ...: the sweep did not complete` in `report.log` | Run `gasig reduce` again to complete the sweep, then `gasig report` |
+| `'ranking.target_species' is empty` or `No name in 'ranking.target_species' is a species of the mechanism` | Name at least one species of the mechanism in `ranking.target_species` |
+| `'ranking.combine' ... needs ...` | Enable the mode that `ranking.combine` names, or set `ranking.combine` to `auto` |
+| `the reactor ignited ... but the mechanism does not form the reference species` | For the detailed mechanism, choose a reference species that the mechanism forms, for example `OH`, or set `ignition_criterion` to `max_dTdt` |
 | `The mechanism has species that are not in the rank file` | Run `gasig rank` with this mechanism before `gasig reduce` |
 | `Matplotlib is not installed` | Install the report extra: `pip install ".[report]"`; the tables are written in every case |
 | The sweep is slow | Use `reduction.search.mode: "adaptive"`, fewer evaluation conditions, or `max_evaluations` |
@@ -340,7 +354,7 @@ The four configurations in `example/methane/sweeps/` repeat the sweep with the c
 
 ## Example: the IDT-oriented reduction of the manuscript
 
-`example/methane/config_ch4_idt.json` applies the settings of the manuscript's case study to methane: ignition delay times only (`fs.enabled` false, `ranking.combine` `idt`), the original rate law, `abs_S` true and `S_AB_row_sum`. The conditions follow the paper's data collector: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, a constant-volume reactor, rtol 1e-6, atol 1e-12 and the OH peak as the ignition sample. That is 117 trajectories. The targets are the fuel, O2, OH, H2O, HO2 and CO2, as in the ethylene example. The sweep runs every size down to 15 species with every condition evaluated, which gives the complete error curve of Fig. 5 of the paper; the tolerance is 5 percent.
+`example/methane/config_ch4_idt.json` applies the conditions of the manuscript's case study to methane: ignition delay times only (`fs.enabled` false, `ranking.combine` `idt`). It uses the original rate law, `abs_S` true and `S_AB_row_sum`, the definition in the paper text. A reproduction of the published computation needs `normalization` `S_row_sum` with the original rate law and `abs_S` true. To get it, set `aggregation.normalization` to `S_row_sum` in a copy of the configuration. The conditions follow the paper's data collector: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, a constant-volume reactor, rtol 1e-6, atol 1e-12 and the OH peak as the ignition sample. That is 117 trajectories. The targets are the fuel, O2, OH, H2O, HO2 and CO2, as in the ethylene example. The sweep runs every size down to 15 species with every condition evaluated. This gives a complete error curve, of the same type as Fig. 5 of the paper. The tolerance is 5 percent.
 
 Table 4. Run times of the manuscript case
 

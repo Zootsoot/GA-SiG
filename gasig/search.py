@@ -22,8 +22,9 @@ Two optima
 An isolated size that passes while its neighbours fail passes because of
 error cancellation at the evaluation conditions, so it is not reliable at
 other conditions. The strict optimum is the smallest evaluated size within
-the tolerance. The robust optimum is the smallest size such that every size
-in ``[n, n + window]`` passes.
+the tolerance. The robust optimum is the smallest passing size whose next
+``window`` larger evaluated sizes also pass. With a step of 1 species, and
+in the adaptive search, these are the sizes ``n + 1`` to ``n + window``.
 """
 from __future__ import annotations
 
@@ -52,6 +53,7 @@ class SearchResult:
 
     @property
     def evaluations(self) -> int:
+        """Every evaluated size, the detailed mechanism included; ``max_evaluations`` does not count it."""
         return len(self.errors)
 
 
@@ -107,12 +109,17 @@ def select_optima(errors: dict[int, float], tol: float, window: int,
                   require_full_window: bool = False) -> tuple[int | None, int | None]:
     """The strict and the robust optimum of the evaluated sizes.
 
-    Strict: the smallest size with ``err <= tol``. Robust: the smallest size
-    ``n`` such that every evaluated size in ``[n, n + window]`` passes. With
-    ``require_full_window`` every size of the window must be evaluated. The
+    Strict: the smallest size with ``err <= tol``. Robust: the smallest
+    passing size ``n`` whose next ``window`` larger evaluated sizes also
+    pass; near the largest size, fewer larger sizes exist. The window counts
+    evaluated sizes, not species: in a sweep with a step of 5 species and a
+    window of 3, the window covers the 3 sizes ``n + 5``, ``n + 10`` and
+    ``n + 15``. With ``require_full_window`` the window is every size from
+    ``n + 1`` to ``n + window``, and each of them must be evaluated. The
     largest size (the detailed mechanism) is not a candidate.
     """
     n_max = max(errors) if errors else 0
+    sizes = sorted(errors)
 
     def passes(n: int) -> bool:
         return errors[n] <= tol
@@ -121,10 +128,15 @@ def select_optima(errors: dict[int, float], tol: float, window: int,
     strict = passing[0] if passing else None
     robust = None
     for n in passing:
-        top = min(n + window, n_max)
-        if require_full_window and any(m not in errors for m in range(n, top + 1)):
-            continue
-        if all(passes(m) for m in errors if n <= m <= top):
+        if require_full_window:
+            top = min(n + window, n_max)
+            if any(m not in errors for m in range(n, top + 1)):
+                continue
+            above = range(n + 1, top + 1)
+        else:
+            i = sizes.index(n)
+            above = sizes[i + 1:i + 1 + window]
+        if all(passes(m) for m in above):
             robust = n
             break
     return strict, robust
@@ -136,7 +148,9 @@ def adaptive_search(evaluate: Callable[[int], float], n_max: int, n_min: int, to
 
     ``evaluate(n)`` returns the maximum relative error of the mechanism with
     ``n`` species; ``inf`` means that a condition did not ignite. The search
-    evaluates every size at most once.
+    evaluates every size at most once. ``max_evaluations`` limits the
+    evaluations of reduced mechanisms; the evaluation of ``n_max`` does not
+    count.
     """
     params = params or SearchParams()
     if n_min > n_max:
@@ -147,7 +161,8 @@ def adaptive_search(evaluate: Callable[[int], float], n_max: int, n_min: int, to
     def ev(n: int) -> float:
         if n in errors:
             return errors[n]
-        if len(errors) >= limit:
+        # max_evaluations limits the reduced mechanisms; the detailed mechanism (n_max) is not one of them.
+        if n != n_max and len(errors) - (n_max in errors) >= limit:
             raise BudgetExhausted()
         errors[n] = float(evaluate(n))
         return errors[n]
