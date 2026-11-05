@@ -110,8 +110,9 @@ def _check_flame_backend(fs_cfg: dict | None, evaluate_fs: bool) -> None:
         from .solvers.zerork import zerork_available, zerork_home
         if not zerork_available(fs_cfg["zerork"]):
             raise FlameSolverError(f"Zero-RK is not available: {zerork_home(fs_cfg['zerork']) / 'bin'} lacks the "
-                                   "flame solver. Build the image from Dockerfile.cpu, or point "
-                                   "fs.solver.zerork.home or ZERORK_HOME at a Zero-RK install.", stage="report",
+                                   "flame solver. Use the CPU image built without "
+                                   "--target gasig. If fs.solver.zerork.home names a folder, set it to null.",
+                                   stage="report",
                                    path=str(zerork_home(fs_cfg["zerork"]) / "bin"))
 
 
@@ -244,7 +245,7 @@ def build_report(cfg: dict, out_dir: Path, data: dict) -> dict:
         try:
             result["files"].update(_plots(rows, tol, strict, robust, result, report_dir))
         except ImportError as exc:
-            log.warning("no figures: Matplotlib is not installed (%s). Install it with 'pip install gasig[report]'.", exc)
+            log.warning("no figures: Matplotlib cannot be imported (%s). Both Docker images contain it; use an image built from the repository Dockerfiles.", exc)
     json_path = report_dir / "report.json"
     with json_path.open("w", encoding="utf-8") as fh:
         json.dump(_json_ready(result), fh, indent=2, allow_nan=False)
@@ -575,7 +576,7 @@ def build_mechanism_report(cfg: dict, out_dir: Path, mechanism: str | Path) -> d
             result["files"].update(_plot_idt(result, report_dir))
             result["files"].update(_plot_fs(result, report_dir))
         except ImportError as exc:
-            log.warning("no figures: Matplotlib is not installed (%s). Install it with 'pip install gasig[report]'.", exc)
+            log.warning("no figures: Matplotlib cannot be imported (%s). Both Docker images contain it; use an image built from the repository Dockerfiles.", exc)
     json_path = report_dir / "report.json"
     with json_path.open("w", encoding="utf-8") as fh:
         json.dump(_json_ready(result), fh, indent=2, allow_nan=False)

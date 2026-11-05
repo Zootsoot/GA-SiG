@@ -202,8 +202,9 @@ def _executables(zcfg: dict, processes: int) -> tuple[Path, Path, Path]:
     if processes > 1 and not (home / "bin" / STEADY_MPI).is_file():
         missing.append(STEADY_MPI)
     if missing:
-        raise FlameSolverError(f"Zero-RK is not available: {home / 'bin'} lacks {missing}. Build the image from "
-                               "Dockerfile.cpu, or point fs.solver.zerork.home or ZERORK_HOME at a Zero-RK install.",
+        raise FlameSolverError(f"Zero-RK is not available: {home / 'bin'} lacks {missing}. Use the CPU image "
+                               "built without --target gasig. If fs.solver.zerork.home names a "
+                               "folder, set it to null.",
                                path=str(home / "bin"), missing=missing)
     return home / "bin" / STEADY_SERIAL, home / "bin" / STEADY_MPI, home / "bin" / LEWIS_GENERATOR
 

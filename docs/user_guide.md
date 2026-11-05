@@ -10,7 +10,7 @@ This guide shows how to reduce a detailed kinetic mechanism with GA-SiG, from th
 
 A reduction has five steps:
 
-1. Install the package (Docker or pip).
+1. Build the Docker image.
 2. Prepare the run folder: the mechanism, the configuration file and, if you have them, precomputed trajectories.
 3. Run the commands in order: `gasig run`, `gasig reduce`, `gasig report`.
 4. Read the results: the error curve, the selected mechanism and the report.
@@ -23,10 +23,10 @@ Each command reads the same configuration file and writes into the same output f
 ### Get the repository
 
 1. Install Git.
-2. Clone the repository:
+2. Clone the branch `feat-spatial-GA-SiG` of the repository. This branch holds version 0.2.0:
 
    ```bash
-   git clone https://github.com/Zootsoot/GA-SiG.git
+   git clone -b feat-spatial-GA-SiG https://github.com/Zootsoot/GA-SiG.git
    ```
 
 3. Go into the folder:
@@ -35,9 +35,11 @@ Each command reads the same configuration file and writes into the same output f
    cd GA-SiG
    ```
 
-**NOTE:** This guide is for version 0.2.0, on the branch `feat-spatial-GA-SiG`. Until it is on `main`, add `-b feat-spatial-GA-SiG` to the `git clone` command.
+**NOTE:** This guide is for version 0.2.0. The branch `main` holds version 0.1 for now. A `git clone` command without `-b feat-spatial-GA-SiG` gets version 0.1.
 
-### With Docker
+### Build the image
+
+Docker is the only supported installation.
 
 1. Install Docker. For GPU runs, install the NVIDIA Container Toolkit (Linux) or use Docker Desktop with WSL 2 (Windows).
 2. Build the image in the repository folder. The CPU image is enough for the reduction steps and, on a laptop, for the sensitivity integration too. A consumer GPU in float64 was slower than the CPU up to 745 species.
@@ -66,24 +68,6 @@ Each command reads the same configuration file and writes into the same output f
 
 **NOTE:** `docker build` downloads files from the internet: the base image, the Python packages and, for the CPU image, the Zero-RK source. The README, section Install, gives the sites. If your network uses a proxy, set the proxy for Docker before you build the image.
 
-### With pip
-
-1. Make a Python 3.10 to 3.12 environment.
-2. Install PyTorch for your CUDA version (refer to pytorch.org), or the CPU build.
-3. Install the package with the report extra in the repository folder:
-
-   ```bash
-   pip install ".[report]"
-   ```
-
-4. Check the installation:
-
-   ```bash
-   gasig info
-   ```
-
-**NOTE:** The commands `reduce`, `report` and `template` need Cantera, NumPy and Matplotlib only. You can run them in a Cantera environment without PyTorch, for example on a machine without a GPU driver.
-
 ## 2 Prepare the inputs
 
 ### The run folder
@@ -94,7 +78,7 @@ Put these files in one folder:
 - the configuration file (`config.json`)
 - the precomputed data files, when you use that route.
 
-The package resolves every relative path in the configuration against the folder of the configuration file. The output folder (`output_dir`) is relative to it too.
+The package resolves every relative path in the configuration against the folder of the configuration file. The output folder (`output_dir`) is relative to it too. The container sees only the run folder. Every file that the configuration names must be in the run folder or in one of its subfolders.
 
 ### The mechanism
 
@@ -102,10 +86,10 @@ The mechanism must load with `cantera.Solution`. The reduction steps work with a
 
 ### The configuration file
 
-1. Write a template with every default:
+1. Write a template with every default. Run the command in the run folder:
 
    ```bash
-   gasig template -o config.json
+   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu template -o config.json
    ```
 
 2. Set the keys of Table 1. Delete the keys you do not change, or keep them; unknown keys are errors.
@@ -151,7 +135,9 @@ Set `idt.source` to `precomputed` and name the five files of `idt.precomputed` (
 
 ## 3 Run
 
-The commands below use the CPU image from inside the run folder. With pip, write `gasig` in place of the Docker prefix. On Windows PowerShell, write the volume as `-v "${PWD}:/workspace"`.
+The commands of this section use the CPU image from inside the run folder. On Windows PowerShell, write the volume as `-v "${PWD}:/workspace"`.
+
+In this guide, `gasig <command>` is the short form of `docker run --rm -v "${PWD}:/workspace" ga-sig:cpu <command>`.
 
 ### 3.1 Sensitivity and rank
 
@@ -243,25 +229,6 @@ The README, section Features under development, gives the method, the keys and t
 
 **NOTE:** An image built before the `lk_greedy` mode rejects the `lk` and `units` keys. In that case, build the image again from the current source.
 
-### Validate a rank without Docker
-
-The reduction and report steps need Cantera, NumPy and Matplotlib only. When a rank exists (`ranked_species.csv` in the output folder, from a `gasig run` in the container or on another machine), you can run both steps in a Cantera environment on your own machine:
-
-1. Install the package into that environment without its dependencies, so that pip does not pull PyTorch:
-
-   ```bash
-   pip install --no-deps -e .
-   ```
-
-2. Run the two steps from the folder of the configuration file:
-
-   ```bash
-   gasig reduce config.json
-   gasig report config.json
-   ```
-
-`gasig info` shows `torch not installed` in such an environment; that is expected. To run the test suite there, install pytest (`pip install pytest`); the tests of the sensitivity integration skip without torch, the tests of the reduction, the search, the report and the configuration run.
-
 ### Expected run times
 
 Table 2. Run times of the methane example on one CPU core in the container
@@ -336,38 +303,37 @@ The README, section Problems and causes, lists the error messages and the action
 | `'ranking.combine' ... needs ...` | Enable the mode that `ranking.combine` names, or set `ranking.combine` to `auto` |
 | `the reactor ignited ... but the mechanism does not form the reference species` | For the detailed mechanism, choose a reference species that the mechanism forms, for example `OH`, or set `ignition_criterion` to `max_dTdt` |
 | `The mechanism has species that are not in the rank file` | Run `gasig rank` with this mechanism before `gasig reduce` |
-| `Matplotlib is not installed` | Install the report extra: `pip install ".[report]"`; the tables are written in every case |
 | The sweep is slow | Use `reduction.search.mode: "adaptive"`, fewer evaluation conditions, or `max_evaluations` |
 | The sweep stops at a large size although the later species are harmless | A species early in the removal order breaks the tolerance at one condition. Try `reduction.search.mode: "greedy"` (under development, section 3.4) |
 | `lk_order.csv is missing; the lk_greedy mode reads the LK order` | Set `lk.enabled` to true. Then run the `run` command of section 3.4 with `--stage lk` |
 | `Unknown key 'lk'` in the container | The image holds an older version of the package. Build the image again from the current source |
-| `Zero-RK is not available` | Build the CPU image without `--target gasig`, or set `fs.solver.zerork.home` or `ZERORK_HOME` |
+| `Zero-RK is not available` | Use the CPU image built without `--target gasig`. The CUDA image has no Zero-RK. If `fs.solver.zerork.home` names a folder, set it to `null` |
 | `the flame solver failed` with the `zerork` backend | The condition gets `inf` (`gasig reduce`) or no value (`gasig report`) and the run continues. A `gave no flame` line of an MPI attempt before the serial retry is normal. Set `fs.solver.zerork.work_dir` to a folder in the run folder and `keep_files` to true; read `log_<n>` in the subfolder of that flame |
 
 ## Example: methane with USC Mech II
 
 The configuration `example/methane/config_ch4_solver.json` reduces methane with the original method and a tolerance of 5 percent. The evaluation uses 12 ignition conditions (1200 to 1600 K, 1 and 10 atm, phi 0.5 and 1) and three flames.
 
-1. Open a shell in the `example/methane` folder of the repository.
+1. Open a shell in the `example` folder of the repository. The configuration names the mechanism as `../USCMechII.yaml`, so the container must see the `example` folder.
 2. Run the sensitivity integration and the rank (approximately 12 min on the CPU):
 
    ```bash
-   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu run config_ch4_solver.json
+   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu run methane/config_ch4_solver.json
    ```
 
 3. Run the sweep (approximately 2.5 min):
 
    ```bash
-   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu reduce config_ch4_solver.json
+   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu reduce methane/config_ch4_solver.json
    ```
 
 4. Write the report (approximately 2 min):
 
    ```bash
-   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu report config_ch4_solver.json
+   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu report methane/config_ch4_solver.json
    ```
 
-5. Open `results_ch4/report/report.md` and the figures. The selected mechanism is `results_ch4/reduced_<n>sp.yaml`.
+5. Open `methane/results_ch4/report/report.md` and the figures. The selected mechanism is `methane/results_ch4/reduced_<n>sp.yaml`.
 
 To try the adaptive search on the same rank, set `reduction.search.mode` to `adaptive` in a copy of the configuration. Then run steps 3 and 4 again. The sweep then evaluates approximately 30 sizes instead of 96.
 

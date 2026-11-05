@@ -150,8 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         if exc.context:
             print("Context: " + ", ".join(f"{k}={v}" for k, v in info["context"].items()), file=sys.stderr)
         if exc.exit_code != 2:
-            print("Set GASIG_DEBUG=1 for the full traceback. The failure file (*.failures.jsonl) in the "
-                  "output folder records the error.", file=sys.stderr)
+            print("For the full traceback, add -e GASIG_DEBUG=1 after --rm in the docker run command. "
+                  "The failure file (*.failures.jsonl) in the output folder records the error.", file=sys.stderr)
         return exc.exit_code
     except FileNotFoundError as exc:
         print(f"File not found: {exc}", file=sys.stderr)
@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         if os.environ.get("GASIG_DEBUG"):
             raise
         print(f"Error: {str(exc).strip()}", file=sys.stderr)
-        print("Set GASIG_DEBUG=1 for the full traceback.", file=sys.stderr)
+        print("For the full traceback, add -e GASIG_DEBUG=1 after --rm in the docker run command.", file=sys.stderr)
         return exit_code(exc)
 
 

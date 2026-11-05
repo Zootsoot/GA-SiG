@@ -23,22 +23,22 @@ A reduction has three commands. `gasig run` makes the rank. `gasig reduce` measu
 | NumPy | 1.26.4 |
 | Cantera | 3.2.0 |
 | PyTorch | 2.8.0, CUDA 12.6 build |
-| Matplotlib | 3.7 or later, optional: the figures of `gasig report` |
+| Matplotlib | 3.7 or later: the figures of `gasig report` |
 | GPU | optional: an NVIDIA GPU with a full double-precision rate; a consumer card is slower than the CPU |
 
-The Docker image contains all of these. The package accepts Python 3.10 to 3.12, NumPy 1.24 or later, Cantera 3.1 or 3.2 and PyTorch 2.1 or later. Without a GPU the package runs on the CPU. The commands `reduce`, `report` and `template` need Cantera and NumPy only; they run without PyTorch.
+The CUDA image contains all of these. The CPU image contains the same versions, with the CPU build of PyTorch 2.8.0. Docker is the only supported installation. Without a GPU the package runs on the CPU.
 
 ## Install
 
 ### Get the repository
 
-Both installation methods start in the repository folder. To get the folder:
+You build the image in the repository folder. To get the folder:
 
 1. Install Git.
-2. Clone the repository:
+2. Clone the branch `feat-spatial-GA-SiG` of the repository. This branch holds version 0.2.0:
 
    ```bash
-   git clone https://github.com/Zootsoot/GA-SiG.git
+   git clone -b feat-spatial-GA-SiG https://github.com/Zootsoot/GA-SiG.git
    ```
 
 3. Go into the folder:
@@ -47,9 +47,9 @@ Both installation methods start in the repository folder. To get the folder:
    cd GA-SiG
    ```
 
-**NOTE:** Version 0.2.0 is on the branch `feat-spatial-GA-SiG`. Until it is on `main`, add `-b feat-spatial-GA-SiG` to the `git clone` command.
+**NOTE:** The branch `main` holds version 0.1 for now. A `git clone` command without `-b feat-spatial-GA-SiG` gets version 0.1.
 
-### With Docker
+### Build the image
 
 1. Install Docker. For GPU runs, also install the NVIDIA Container Toolkit (Linux) or use Docker Desktop with WSL 2 (Windows).
 2. Build the image in the repository folder:
@@ -86,21 +86,21 @@ docker build -f Dockerfile.cpu --build-arg ZERORK_JOBS=2 -t ga-sig:cpu .
 
 **NOTE:** `docker build` downloads the base image from Docker Hub and the Python packages from PyPI. `Dockerfile.cpu` also downloads PyTorch from the PyTorch package index and the Zero-RK source from GitHub. During the compilation, Zero-RK downloads its libraries. The machine must have access to these sites. If your network uses a proxy, set the proxy for Docker before you build the image.
 
-### With pip
+### Short form of the commands
 
-1. Make a Python 3.10, 3.11 or 3.12 environment (3.11 is the tested version).
-2. Install PyTorch for your CUDA version. Refer to pytorch.org for the command.
-3. Install the package in the repository folder, with the report extra for the figures:
+The image runs the `gasig` command. In this README, `gasig <command>` is the short form of the `docker run` command that follows. Run it in the run folder:
 
-   ```bash
-   pip install ".[report]"
-   ```
+```bash
+docker run --rm -v "<run folder>:/workspace" ga-sig <command>
+```
 
-4. Do a check:
+For a GPU run, add `--gpus all` after `--rm`. For the CPU image, write `ga-sig:cpu` in place of `ga-sig`. To set an environment variable in the container, add `-e <name>=<value>` after `--rm`.
 
-   ```bash
-   gasig info
-   ```
+The container sees only the run folder. Every file that the configuration names must be in the run folder or in one of its subfolders. The shipped configurations name the mechanism in a parent folder, for example `../USCMechII.yaml`. For these, use the `example` folder as the run folder. Give the configuration path relative to the `example` folder:
+
+```bash
+docker run --rm -v "<repository folder>/example:/workspace" ga-sig:cpu run methane/config_ch4_solver.json
+```
 
 ## Configure
 
@@ -190,7 +190,7 @@ Table 1. Configuration keys
 | `report.T_points` | integer | `12` | Temperatures per pressure and equivalence ratio in the report |
 | `report.plots` | boolean | `true` | Write the PNG figures (needs Matplotlib) |
 
-The `example` folder holds the mechanism and the ethylene data. The ethylene case is in `example/ethylene`; the methane cases are in `example/methane`:
+The `example` folder holds the mechanism and the ethylene data. The ethylene case is in `example/ethylene`; the methane cases are in `example/methane`. Use the `example` folder as the run folder for these configurations (refer to the section Short form of the commands):
 
 - `ethylene/config_c2h4_precomputed.json`: the ethylene trajectories of `example`, idt mode, precomputed route, with a `reduction` block (tolerance 5 percent) and a `report` block.
 - `ethylene/config_c2h4_solver.json`: the same case through the solver route: the 99 ignition cases of the manuscript, 1000 to 1600 K every 60 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, constant volume, 0.2 s.
@@ -222,12 +222,6 @@ The folder `example/methane/sweeps` holds four configurations for the comparison
    docker run --rm -v "<run folder>:/workspace" ga-sig run config.json --device cpu
    ```
 
-   With pip:
-
-   ```bash
-   gasig run config.json
-   ```
-
 3. Read `summary.json` and `ranked_species.csv` in the output folder.
 
 To rank the same sensitivities again with other target species:
@@ -247,7 +241,7 @@ To measure how the rank performs, remove species in rank order and get the error
 gasig reduce config.json
 ```
 
-The command reads the rank file of the run (`reduction.ranking_file`). It removes `reduction.step` species per step, down to `reduction.min_species`. It builds each reduced mechanism in memory and computes the ignition delay time at the `idt.solver` conditions, or at the `reduction.idt` overrides. It writes `reduction_sweep.csv` with the maximum relative error per size. The sweep keeps the target species, the fuel and oxidizer species, the reference species and `reduction.keep_species`. Set `reduction.evaluate_fs` to true to add the flame speed error; this is slow. The command needs Cantera and NumPy only.
+The command reads the rank file of the run (`reduction.ranking_file`). It removes `reduction.step` species per step, down to `reduction.min_species`. It builds each reduced mechanism in memory and computes the ignition delay time at the `idt.solver` conditions, or at the `reduction.idt` overrides. It writes `reduction_sweep.csv` with the maximum relative error per size. The sweep keeps the target species, the fuel and oxidizer species, the reference species and `reduction.keep_species`. Set `reduction.evaluate_fs` to true to add the flame speed error; this is slow.
 
 With `reduction.error_tolerance`, the command selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`. It reports two sizes. The strict optimum is the smallest evaluated size within the tolerance. The robust optimum is the smallest size whose next `robust_window` larger sizes also pass; the report uses it. The window counts evaluated sizes. With `reduction.step` above 1, the window covers `robust_window` times `step` species. If no size meets the window, the command selects the strict optimum. Set `reduction.search.mode` to `adaptive` for a large mechanism. The search evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance and lists the intervals it did not refine. Two more search modes, `greedy` and `lk_greedy`, are under development. Refer to the section Features under development.
 
@@ -273,7 +267,7 @@ The command computes the ignition delay time of both mechanisms on the evaluatio
 
 **NOTE:** On Windows PowerShell, write the volume as `-v "${PWD}:/workspace"` from inside the run folder.
 
-**NOTE:** The scripts `GA-SiG.py` and `graph_search_to_importance.py` at the root of the source checkout are wrappers around the package. `python GA-SiG.py config.json` runs the sensitivity stage only. `python graph_search_to_importance.py config.json` runs the rank. They are not in the wheel or in the image.
+**NOTE:** The scripts `GA-SiG.py` and `graph_search_to_importance.py` at the root of the repository are wrappers for the users of version 0.1. They are not in the image, and the Docker installation does not support them. Use `gasig run` and `gasig rank` in place of them.
 
 ## Outputs
 
@@ -358,7 +352,7 @@ The package drives the solver in the way of the Zero-RK `flame_speed` example:
 
 The steady solver of Zero-RK supports constant Lewis numbers only. Its flame speeds differ from the Cantera mixture-averaged values: by 1 percent for methane at phi 1.0. For a 112-species jet-fuel mechanism at 473 K and 1 atm, the difference is 8 percent at phi 1.0 and 21 percent at phi 0.9. Compare the two backends on the detailed mechanism before you mix them in one study. Each solver call runs on `processes` MPI ranks. The MPI build of Zero-RK stops at the first failed Newton step; the package then repeats the call with the serial solver. A solver failure at one condition gives `inf` for that condition in `gasig reduce` and no value in `gasig report`; the run continues.
 
-`Dockerfile.cpu` compiles Zero-RK from source at a fixed commit (`ZERORK_REF`) and lets Open MPI run as root in the container. The CUDA image does not contain Zero-RK. Outside the image, install Zero-RK from its repository and set `ZERORK_HOME` or `fs.solver.zerork.home`.
+`Dockerfile.cpu` compiles Zero-RK from source at a fixed commit (`ZERORK_REF`) and lets Open MPI run as root in the container. The CUDA image does not contain Zero-RK. Use the CPU image for this backend.
 
 If you use this backend, cite Zero-RK:
 
@@ -401,7 +395,7 @@ The LK stage runs in `gasig run` after the rank, when `lk.enabled` is true. For 
 
 A chain unit is a sequence of species in which each member has one significant production reaction and one significant consumption reaction. The consumption reaction of each member is the production reaction of the next member. The removal of one member cuts the sequence, so the `lk_greedy` search removes a unit as one piece. The detection stage runs in `gasig run` when `units.detect` is true. It uses the reaction extents along the idt trajectories.
 
-Both stages need the idt mode. The LK stage and the `tail` scope of the detection also need the GA-SiG rank. `gasig run` needs PyTorch, so run the stages in the container. To add a stage to an earlier run, set `lk.enabled` or `units.detect` to true and use `--stage`:
+Both stages need the idt mode. The LK stage and the `tail` scope of the detection also need the GA-SiG rank. To add a stage to an earlier run, set `lk.enabled` or `units.detect` to true and use `--stage`:
 
 ```bash
 gasig run config.json --stage lk
@@ -488,10 +482,10 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 | `conditions do not ignite with the detailed mechanism` | `end_time_s` or `max_steps` is too small for the evaluation conditions | Raise them in `reduction.idt`, or change the conditions |
 | `reduction_sweep.json has the status ...: the sweep did not complete` in `report.log` | `gasig reduce` stopped before the end of the sweep. The report uses only the evaluated sizes | Run `gasig reduce` again, then `gasig report` |
 | `no evaluated mechanism is within the tolerance` in the log | Every reduced size exceeds `reduction.error_tolerance` | Raise the tolerance, lower `reduction.min_species`, or rank with other targets |
-| `Matplotlib is not installed` in the log | The report extra is not installed | `pip install ".[report]"`; the tables are written in every case |
-| `Zero-RK is not available` | The image was built with `--target gasig`, or `fs.solver.zerork.home` is wrong | Build the full CPU image, or point `home` or `ZERORK_HOME` at a Zero-RK install |
+| `no figures: Matplotlib cannot be imported` in the log | The image is not built from the repository Dockerfiles | Build the image again from the repository Dockerfiles. The report writes its tables without the figures |
+| `Zero-RK is not available` | The run uses the CUDA image or a CPU image built with `--target gasig`, or `fs.solver.zerork.home` names a wrong folder | Use the CPU image built without `--target gasig`. If `fs.solver.zerork.home` names a folder, set it to `null` |
 | `the flame solver failed` in `reduce.log` or in the report log | Zero-RK gave no flame at this condition after the serial retry; the condition gets `inf` (`gasig reduce`) or no value (`gasig report`). A `gave no flame` line of an MPI attempt, followed by `the serial solver repeats it` or `the pseudo-unsteady solver continues`, is normal | Set `fs.solver.zerork.work_dir` to a folder in the run folder and `keep_files` to true. Read `log_<n>`, `log_<n>s` and `log_<n>p` in the subfolder of the flame. Change `rel_tol` or `processes` |
-| `Error: ...` with exit code 3 | A run-time error in a solver or in the data | Read the message; set `GASIG_DEBUG=1` for the traceback; `reduce.log` and `report.log` hold the traceback. The failure file (`*.failures.jsonl`) in the output folder records the error with its stage and context |
+| `Error: ...` with exit code 3 | A run-time error in a solver or in the data | Read the message. For the traceback, add `-e GASIG_DEBUG=1` after `--rm` in the `docker run` command. `reduce.log` and `report.log` also hold the traceback. The failure file (`*.failures.jsonl`) in the output folder records the error with its stage and context |
 | Out of GPU memory | The mechanism is too large for the GPU | Use a larger GPU or `device: "cpu"` |
 | The GPU run is slower than the CPU run | The card computes double precision slowly (consumer cards) | Use `device: "cpu"`; on an RTX 2050 the CPU was faster up to 745 species |
 
