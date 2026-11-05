@@ -20,6 +20,23 @@ Each command reads the same configuration file and writes into the same output f
 
 ## 1 Install
 
+### Get the repository
+
+1. Install Git.
+2. Clone the repository:
+
+   ```bash
+   git clone https://github.com/Zootsoot/GA-SiG.git
+   ```
+
+3. Go into the folder:
+
+   ```bash
+   cd GA-SiG
+   ```
+
+**NOTE:** This guide is for version 0.2.0, on the branch `feat-spatial-GA-SiG`. Until it is on `main`, add `-b feat-spatial-GA-SiG` to the `git clone` command.
+
 ### With Docker
 
 1. Install Docker. For GPU runs, install the NVIDIA Container Toolkit (Linux) or use Docker Desktop with WSL 2 (Windows).
@@ -44,6 +61,10 @@ Each command reads the same configuration file and writes into the same output f
    The output lists the versions of Python, NumPy, Cantera, PyTorch and Matplotlib.
 
 **NOTE:** The CPU image also compiles the Zero-RK flame solvers for the flame-speed backend `fs.solver.backend: "zerork"`. Add `--target gasig` to the build command to leave them out. The README, section Flame speeds with Zero-RK, describes the backend and its citation.
+
+**NOTE:** `Dockerfile.cpu` compiles Zero-RK with six parallel jobs. If `docker build` stops with a `Killed` message, add `--build-arg ZERORK_JOBS=2`. Fewer jobs use less memory.
+
+**NOTE:** `docker build` downloads files from the internet: the base image, the Python packages and, for the CPU image, the Zero-RK source. The README, section Install, gives the sites. If your network uses a proxy, set the proxy for Docker before you build the image.
 
 ### With pip
 

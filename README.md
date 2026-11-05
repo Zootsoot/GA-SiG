@@ -30,6 +30,25 @@ The Docker image contains all of these. The package accepts Python 3.10 to 3.12,
 
 ## Install
 
+### Get the repository
+
+Both installation methods start in the repository folder. To get the folder:
+
+1. Install Git.
+2. Clone the repository:
+
+   ```bash
+   git clone https://github.com/Zootsoot/GA-SiG.git
+   ```
+
+3. Go into the folder:
+
+   ```bash
+   cd GA-SiG
+   ```
+
+**NOTE:** Version 0.2.0 is on the branch `feat-spatial-GA-SiG`. Until it is on `main`, add `-b feat-spatial-GA-SiG` to the `git clone` command.
+
 ### With Docker
 
 1. Install Docker. For GPU runs, also install the NVIDIA Container Toolkit (Linux) or use Docker Desktop with WSL 2 (Windows).
@@ -58,6 +77,14 @@ The CPU image also compiles the Zero-RK flame solvers (refer to the section Flam
 ```bash
 docker build -f Dockerfile.cpu --target gasig -t ga-sig:cpu .
 ```
+
+`Dockerfile.cpu` compiles Zero-RK with six parallel jobs, and each job uses memory. If `docker build` stops with a `Killed` message or is very slow, use fewer jobs:
+
+```bash
+docker build -f Dockerfile.cpu --build-arg ZERORK_JOBS=2 -t ga-sig:cpu .
+```
+
+**NOTE:** `docker build` downloads the base image from Docker Hub and the Python packages from PyPI. `Dockerfile.cpu` also downloads PyTorch from the PyTorch package index and the Zero-RK source from GitHub. During the compilation, Zero-RK downloads its libraries. The machine must have access to these sites. If your network uses a proxy, set the proxy for Docker before you build the image.
 
 ### With pip
 
@@ -440,6 +467,8 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 
 | Symptom | Cause | Action |
 |---|---|---|
+| `Killed` in the Zero-RK stage of `docker build -f Dockerfile.cpu` | The parallel compile jobs use more memory than Docker has | Build the image again with `--build-arg ZERORK_JOBS=2`, or give Docker more memory |
+| `docker build` stops at a download | The machine has no access to the site, for example behind a proxy | Set the proxy for Docker, or build the image on a machine with access |
 | `Configuration error: Unknown key` | A key name has a typo | Compare the key with `gasig template` |
 | `Unknown key 'lk'` or `'units'`, or `lk_greedy` is not an allowed mode, in the container | The image holds an older version of the package | Build the image again from the current source |
 | `lk_order.csv is missing; the lk_greedy mode reads the LK order` | The run had no LK stage | Set `lk.enabled` to true. Then run `gasig run config.json --stage lk` |
