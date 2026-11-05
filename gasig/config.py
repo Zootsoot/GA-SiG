@@ -172,9 +172,9 @@ SCHEMA: dict[str, Any] = {
                       doc="Sum abs(S) over the reactions of each species (manuscript). "
                           "false sums the signed S, as the version 0.1 script did."),
         "normalization": Spec(str, "S_AB_row_sum", choices=("S_AB_row_sum", "S_row_sum"),
-                              doc="'S_AB_row_sum' divides by the row sum of S_AB (manuscript text, intended); "
-                                  "'S_row_sum' divides by the row sum of max abs(S) over reactions "
-                                  "(the computation behind the published results)."),
+                              doc="'S_AB_row_sum' divides by the row sum of S_AB (the manuscript and the "
+                                  "published results); 'S_row_sum' divides by the row sum of max abs(S) over "
+                                  "reactions (the version 0.1 script)."),
     },
     "reduction": {
         "ranking_file": Spec(str, "ranked_species.csv", doc="Rank file in output_dir, written by the rank stage."),

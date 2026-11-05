@@ -102,7 +102,7 @@ Table 1. Keys to set for a reduction
 | run, reduce | `idt.solver.preconditioner` | `adaptive` by default; `adaptive_fast` halves the solve time of large mechanisms; `none` is the dense solver |
 | run | `fs.enabled`, `fs.solver.*` | `true` and the flame conditions, when you want the flame-speed mode |
 | run, reduce, report | `fs.solver.backend` | `cantera` (the `FreeFlame`) or `zerork` (the Zero-RK steady flame solver, constant Lewis numbers, in the CPU image). Compare the time and the flame speed of the two backends on your detailed mechanism before a sweep |
-| run | `sensitivity.rate_law`, `aggregation.normalization`, `aggregation.abs_S` | `original`, `S_AB_row_sum` and `true` for the definition in the paper text. A reproduction of the published computation needs `original`, `S_row_sum` and `true` |
+| run | `sensitivity.rate_law`, `aggregation.normalization`, `aggregation.abs_S` | `original`, `S_AB_row_sum` and `true` for the method of the paper and its published results. These are the defaults |
 | run | `ranking.target_species` | The species that the reduction must predict, for example the fuel, O2, OH, H2O and CO2. At least one name must be a species of the mechanism |
 | run | `ranking.combine` | `auto` ranks the hybrid matrix when both modes are enabled, else the enabled mode. `hybrid`, `idt` and `fs` need the modes they name to be enabled |
 | reduce | `reduction.error_tolerance` | The allowed relative error of the ignition delay time, for example `0.05` |
@@ -354,7 +354,7 @@ The four configurations in `example/methane/sweeps/` repeat the sweep with the c
 
 ## Example: the IDT-oriented reduction of the manuscript
 
-`example/methane/config_ch4_idt.json` applies the conditions of the manuscript's case study to methane: ignition delay times only (`fs.enabled` false, `ranking.combine` `idt`). It uses the original rate law, `abs_S` true and `S_AB_row_sum`, the definition in the paper text. A reproduction of the published computation needs `normalization` `S_row_sum` with the original rate law and `abs_S` true. To get it, set `aggregation.normalization` to `S_row_sum` in a copy of the configuration. The conditions follow the paper's data collector: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, a constant-volume reactor, rtol 1e-6, atol 1e-12 and the OH peak as the ignition sample. That is 117 trajectories. The targets are the fuel, O2, OH, H2O, HO2 and CO2, as in the ethylene example. The sweep runs every size down to 15 species with every condition evaluated. This gives a complete error curve, of the same type as Fig. 5 of the paper. The tolerance is 5 percent.
+`example/methane/config_ch4_idt.json` applies the conditions of the manuscript's case study to methane: ignition delay times only (`fs.enabled` false, `ranking.combine` `idt`). It uses the switches of the published results: the original rate law, `abs_S` true and `S_AB_row_sum`. The conditions follow the paper's data collector: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, a constant-volume reactor, rtol 1e-6, atol 1e-12 and the OH peak as the ignition sample. That is 117 trajectories. The targets are the fuel, O2, OH, H2O, HO2 and CO2, as in the ethylene example. The sweep runs every size down to 15 species with every condition evaluated. This gives a complete error curve, of the same type as Fig. 5 of the paper. The tolerance is 5 percent.
 
 Table 4. Run times of the manuscript case
 

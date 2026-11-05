@@ -174,9 +174,9 @@ The `example` folder holds the mechanism and the ethylene data. The ethylene cas
 
 The folder `example/methane/sweeps` holds four configurations for the comparison of the method versions on methane. The file names give the rate law and the normalization: `ch4_<original|corrected>_<SAB|Srow>.json`. Each file has a `reduction` block for `gasig reduce`. On methane the corrected rate law keeps 25 species within 5 percent IDT error. The original law keeps 26 or 27 species. Every curve breaks at the removal of C2H4.
 
-`example/r_AB.npy` and `example/ranked_sp.npy` are the results of the version 0.1 script for the ethylene trajectories. They correspond to `rate_law: "original"`, `substep_tol: null`, `abs_S: false` and `normalization: "S_row_sum"`. `ethylene/config_c2h4_precomputed.json` uses `rate_law: "original"`, `abs_S: true` and `normalization: "S_AB_row_sum"`, the definition in the paper text. It gives a different rank.
+`example/r_AB.npy` and `example/ranked_sp.npy` are the results of the version 0.1 script for the ethylene trajectories. They correspond to `rate_law: "original"`, `substep_tol: null`, `abs_S: false` and `normalization: "S_row_sum"`. `ethylene/config_c2h4_precomputed.json` uses `rate_law: "original"`, `abs_S: true` and `normalization: "S_AB_row_sum"`, the switches of the published results. It gives a different rank.
 
-**NOTE:** Every configuration in `example/ethylene` and every configuration directly in `example/methane` uses `S_AB_row_sum`. A reproduction of the published computation needs `normalization: "S_row_sum"` with `rate_law: "original"` and `abs_S: true` (refer to Table 4). `methane/sweeps/ch4_original_Srow.json` uses these switches on methane.
+**NOTE:** The version 0.1 script is an upload of an earlier test version of the notebook. It is not the method of the published results. Every configuration in `example/ethylene` and every configuration directly in `example/methane` uses the switches of the published results: `rate_law: "original"`, `abs_S: true` and `normalization: "S_AB_row_sum"` (refer to Table 4). These are also the defaults.
 
 ## Run
 
@@ -313,8 +313,8 @@ Table 4. Method switches
 | `substep_tol: 0.01` | Step-size guard. The package compares one step with two half steps, species row by species row. If a row differs by more than the tolerance, the package doubles the number of sub-steps and compares again, up to `max_substeps`. We recommend this value with the corrected rate law. |
 | `abs_S: true` | `S_AB(a, b)` is the sum of `abs(S(a, j))` over the reactions `j` of species `b`, as in the paper. |
 | `abs_S: false` | The signed sum, as in the version 0.1 script. |
-| `normalization: "S_AB_row_sum"` | `r_AB(a, b) = S_AB(a, b) / sum_b' S_AB(a, b')`. Each row of `r_AB` sums to 1. This is the definition in the paper. |
-| `normalization: "S_row_sum"` | `r_AB(a, b) = S_AB(a, b) / sum_j max_m abs(S_m(a, j))`. This is the computation behind the published results. |
+| `normalization: "S_AB_row_sum"` | `r_AB(a, b) = S_AB(a, b) / sum_b' S_AB(a, b')`. Each row of `r_AB` sums to 1. This is the definition in the paper and the computation of the published results. |
+| `normalization: "S_row_sum"` | `r_AB(a, b) = S_AB(a, b) / sum_j max_m abs(S_m(a, j))`. This is the normalization of the version 0.1 script, an earlier test version. |
 
 **CAUTION:** The two rate laws give different species ranks. Compare them on the same data before you use the corrected rate law for a reduction.
 

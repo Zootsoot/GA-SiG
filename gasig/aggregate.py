@@ -1,7 +1,7 @@
 """From sensitivity matrices to the normalized species-to-species matrix r_AB.
 
-Manuscript definitions (defaults)
----------------------------------
+Manuscript definitions (defaults, the computation of the published results)
+---------------------------------------------------------------------------
 ``S_AB(a, b) = sum_{j in R_b} abs(S(a, j))`` where ``R_b`` is the set of
 reactions with a non-zero net stoichiometric coefficient of species ``b``.
 Over several trajectories the element-wise maximum of ``S_AB`` is taken,
@@ -11,8 +11,8 @@ sum_b' S_AB(a, b')``, so every row of ``r_AB`` sums to 1 (or is all zero).
 Switches
 --------
 ``normalization="S_row_sum"`` divides by the row sum of the element-wise
-maximum of ``abs(S)`` over the reactions instead. This is the computation
-behind the published results and is kept as a second version to test.
+maximum of ``abs(S)`` over the reactions instead. The version 0.1 script
+uses it; it comes from an earlier test version of the definition.
 ``abs_S=False`` sums the signed sensitivities, as the version 0.1 script did.
 """
 from __future__ import annotations

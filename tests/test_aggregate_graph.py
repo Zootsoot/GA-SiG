@@ -26,7 +26,7 @@ def test_aggregate_manuscript_definition_rows_sum_to_one():
     assert agg.r_AB == pytest.approx(np.array([[1.5 / 4.0, 2.5 / 4.0], [1.0 / 5.0, 4.0 / 5.0]]))
 
 
-def test_aggregate_published_normalization():
+def test_aggregate_S_row_sum_normalization():
     agg = aggregate([S], NU, normalization="S_row_sum")
     row_sum_abs_S = np.abs(S).sum(axis=1)          # [3.5, 4.0]
     expected = np.array([[1.5, 2.5], [1.0, 4.0]]) / row_sum_abs_S[:, None]

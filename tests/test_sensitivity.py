@@ -154,7 +154,7 @@ def test_original_mode_reproduces_version_01_sensitivities(mech_path, example_tr
     assert rows.sum() >= 30
     assert np.max(np.abs(S_new - S_ref)[rows] / row_max[rows, None]) <= 1e-8
 
-    # aggregation with the published normalization equals the version 0.1 aggregate (abs variant)
+    # aggregation with the S_row_sum normalization equals the version 0.1 aggregate (abs variant)
     agg = aggregate([S_new, 0.5 * S_new], kin.nu_net_np, abs_S=True, normalization="S_row_sum")
     S_abs_ref, S_AB_ref, r_ref = ref.aggregate_v01([S_ref, 0.5 * S_ref], kin_ref, use_abs=True)
     assert np.max(np.abs(agg.S_AB - S_AB_ref)) <= 1e-9 * S_AB_ref.max()

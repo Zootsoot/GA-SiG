@@ -18,8 +18,10 @@ around the package; change the package, not the wrappers.
 - `gasig/kinetics.py` holds the two rate laws (`original`, `corrected`).
   `gasig/aggregate.py` holds the two normalizations and the `abs_S` switch.
   Keep both versions of each switch. The published results depend on
-  `original`, `S_row_sum` and `abs_S: true`. The version 0.1 script and the
-  shipped example depend on `original`, `S_row_sum` and `abs_S: false`.
+  `original`, `S_AB_row_sum` and `abs_S: true`, the defaults. The version
+  0.1 script and its results in `example/` (`r_AB.npy`, `ranked_sp.npy`)
+  depend on `original`, `S_row_sum` and `abs_S: false`. Version 0.1 is an
+  upload of an earlier test version of the notebook, not the published method.
 - `tests/reference_v01.py` is the frozen version 0.1 code. Do not change it;
   the regression tests compare the package against it.
 - `gasig/trajectory.py` and `gasig/logs.py` must stay free of torch imports.
