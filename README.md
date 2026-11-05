@@ -138,10 +138,11 @@ Table 1. Main configuration keys
 | `reduction.evaluate_fs` | boolean | `false` | Also evaluate the flame speed error |
 | `reduction.error_tolerance` | number or null | `null` | Relative IDT error limit for the selection of the reduced mechanism |
 | `reduction.write_mechanism` | boolean | `true` | Write the selected mechanism as `reduced_<n>sp.yaml` |
-| `reduction.search.mode` | string | `full` | `full` evaluates every size in steps. `adaptive` searches the size within the tolerance. `greedy` tests one species at a time and keeps a species whose removal breaks the tolerance |
-| `reduction.search.early_exit` | boolean or null | `null` | Stop a size at the first condition above the tolerance; `null` is true in adaptive and greedy mode |
+| `reduction.search.mode` | string | `full` | `full` evaluates every size in steps. `adaptive` searches the size within the tolerance. `greedy` and `lk_greedy` are under development; refer to the section Features under development |
+| `reduction.search.early_exit` | boolean or null | `null` | Stop a size at the first condition above the tolerance; `null` is true in `adaptive`, `greedy` and `lk_greedy` mode |
 | `reduction.search.robust_window` | integer | `3` | Sizes above the optimum that must also pass for the robust optimum |
-| `reduction.search.max_evaluations` | integer or null | `null` | Adaptive and greedy: upper limit of reduced mechanisms evaluated |
+| `reduction.search.max_evaluations` | integer or null | `null` | `adaptive`, `greedy` and `lk_greedy`: upper limit of reduced mechanisms evaluated |
+| `lk.*`, `units.*`, `reduction.search.block_size`, `tier0_score`, `pass2_tolerance`, `units` | various | various | Keys of the features under development; refer to Table 6 |
 | `reduction.idt.*`, `reduction.fs.*` | various | `null` | Overrides of the solver conditions for the evaluation |
 | `report.T_points` | integer | `12` | Temperatures per pressure and equivalence ratio in the report |
 | `report.plots` | boolean | `true` | Write the PNG figures (needs Matplotlib) |
@@ -153,6 +154,7 @@ The `example` folder holds the mechanism and the ethylene data. The ethylene cas
 - `methane/config_ch4_solver.json`: methane with USC Mech II, both modes, solver route, original method, with a `reduction` block (tolerance 5 percent) and a `report` block.
 - `methane/config_ch4_corrected.json`: the same case with the corrected rate law and the step-size guard.
 - `methane/config_ch4_idt.json`: the IDT-oriented reduction of methane with the settings of the manuscript: 1000 to 1600 K every 50 K, 1, 5 and 30 atm, phi 0.5, 1.0 and 2.0, constant-volume reactor, OH peak, tolerance 5 percent.
+- `methane/config_ch4_lk_greedy.json`: under development; the `lk_greedy` search, with the linearised knockout (LK), on methane, with every configuration key. Refer to the section Features under development.
 
 The folder `example/methane/sweeps` holds four configurations for the comparison of the method versions on methane. The file names give the rate law and the normalization: `ch4_<original|corrected>_<SAB|Srow>.json`. Each file has a `reduction` block for `gasig reduce`. On methane the corrected rate law keeps 25 species within 5 percent IDT error. The original law keeps 26 or 27 species. Every curve breaks at the removal of C2H4.
 
@@ -200,7 +202,7 @@ gasig reduce config.json
 
 The command reads the rank file of the run (`reduction.ranking_file`). It removes `reduction.step` species per step, down to `reduction.min_species`. It builds each reduced mechanism in memory and computes the ignition delay time at the `idt.solver` conditions, or at the `reduction.idt` overrides. It writes `reduction_sweep.csv` with the maximum relative error per size. The sweep keeps the target species, the fuel and oxidizer species, the reference species and `reduction.keep_species`. Set `reduction.evaluate_fs` to true to add the flame speed error; this is slow. The command needs Cantera and NumPy only.
 
-With `reduction.error_tolerance`, the command selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`. It reports two sizes. The strict optimum is the smallest evaluated size within the tolerance. The robust optimum is the smallest size whose next `robust_window` larger sizes also pass; the report uses it. Set `reduction.search.mode` to `adaptive` for a large mechanism. The search evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance and lists the intervals it did not refine. Set it to `greedy` when a size fails while the later species are harmless. The pass tests one species at a time and keeps a species whose removal breaks the tolerance.
+With `reduction.error_tolerance`, the command selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`. It reports two sizes. The strict optimum is the smallest evaluated size within the tolerance. The robust optimum is the smallest size whose next `robust_window` larger sizes also pass; the report uses it. Set `reduction.search.mode` to `adaptive` for a large mechanism. The search evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance and lists the intervals it did not refine. Two more search modes, `greedy` and `lk_greedy`, are under development. Refer to the section Features under development.
 
 To compare the selected mechanism with the detailed one:
 
@@ -244,10 +246,15 @@ Table 2. Files in the output folder
 | `reduced_<n>sp.yaml` | The selected reduced mechanism, with transport data when the detailed mechanism has it | Cantera YAML |
 | `report/` | `report.md`, `report.json`, `error_vs_species.png`, `idt_comparison.png`, `flame_speed_comparison.png`, from `gasig report` | Markdown, JSON, PNG |
 | `report_<name>/`, `report_<name>.log` | The comparison of the mechanism file `<name>.yaml` with the detailed mechanism, from `gasig report --mechanism`; no sweep is necessary | Markdown, JSON, PNG, text |
+| `lk_order.csv` | Under development: the LK order, in the format of `ranked_species.csv`. `importance` holds the LK score, `gasig_importance` the GA-SiG importance | CSV |
+| `lk_scores.npy` | Under development: the LK score of every species on each screened trajectory, shape (number of screened trajectories, Ns) | NumPy |
+| `chain_units.json` | Under development: the detected chain units, the links with their production and consumption reactions, and the detection settings | JSON |
 
 A ranking-only run keeps the sensitivity record in `summary.json` and adds its own ranking block. `config_resolved.json` is a valid configuration file.
 
 `gasig reduce` writes a new `reduce.log`, `reduction_sweep.csv` and `reduction_sweep.json` at each sweep. A case with no ignition gives `inf` in the CSV and `null` in the JSON; `n_unignited` counts these cases. A condition where the Cantera integrator fails on a reduced mechanism also gives `inf`; `n_solver_failures` counts these cases, and the sweep continues. The detailed mechanism must integrate at every condition. The JSON file is written after every size with `status: running`, and completed with the selection at the end. `max_fs_error` is `null` without `reduction.evaluate_fs`. A row with `complete: false` stopped at the first failed condition (early exit); its error is a lower bound, and `smallest_mechanism_within` counts complete rows only. In greedy mode every test is a row. `removed_in_step` holds the species tested. `kept_back` is true when the species stays because its removal breaks the tolerance. The JSON `removal_order` then lists the accepted removals in their order, and `rank_removal_order` the rank.
+
+In `lk_greedy` mode, every test is also a row. `removed_in_step` lists every species of the tested piece or block, and `rank_removal_order` holds the LK order. Each JSON row also holds `pass`, `test` (`single`, `unit` or `block`) and `tolerance`. The JSON `search.passes` gives the size, the kept pieces and the untested pieces after each pass.
 
 ## Precomputed data format
 
@@ -309,6 +316,93 @@ If you use this backend, cite Zero-RK:
 - S. Lapointe, R. A. Whitesides, M. J. McNenly, Sparse, iterative simulation methods for one-dimensional laminar flames, Combust. Flame 204 (2019) 23–32. https://doi.org/10.1016/j.combustflame.2019.02.030
 - Zero-RK, Lawrence Livermore National Laboratory, https://github.com/LLNL/zero-rk (LLNL-CODE-2025129).
 
+## Features under development
+
+The features in this section go beyond the method of the manuscript. They are under development:
+
+- The manuscript does not use them and gives no evidence for them.
+- The unit tests cover their logic, but only the methane example has an end-to-end evaluation.
+- Their keys, outputs and results can change in a later version.
+
+**CAUTION:** These features can give a reduced mechanism with a large error. You use them at your own risk. Compare each reduced mechanism with the detailed mechanism before you use it, for example with `gasig report --mechanism`.
+
+Table 5. Features under development
+
+| Feature | Key | Function |
+|---|---|---|
+| Greedy search | `reduction.search.mode: "greedy"` | Tests the species of the GA-SiG rank one at a time. Keeps each species whose removal breaks the tolerance |
+| Linearised knockout (LK) | `lk.enabled` | Estimates the effect of the removal of each species along the idt trajectories, without a new reactor solve. Writes the LK order |
+| Chain units | `units.detect` | Finds sequences of species that one reaction flux goes through, so that a search can remove each sequence as one piece |
+| LK greedy search | `reduction.search.mode: "lk_greedy"` | Tests the LK order in pieces and blocks, with an optional second pass at a second tolerance |
+
+### Greedy search
+
+The `greedy` mode uses the GA-SiG rank (`reduction.ranking_file`):
+
+1. The search removes the next species of the rank, together with the removals that it accepted before.
+2. If the maximum IDT error is at or below `reduction.error_tolerance`, the removal stays.
+3. If not, the species stays in the mechanism, and the search continues with the next species.
+
+The search stops at `reduction.min_species`, at the end of the rank, or after `reduction.search.max_evaluations` tests. The selection is the smallest accepted mechanism; `robust_window` does not apply. Use this mode if a size fails but most of the later species have no effect. A failed test stops at the first condition above the tolerance. An accepted removal costs a full evaluation.
+
+### Linearised knockout and chain units
+
+The LK stage runs in `gasig run` after the rank, when `lk.enabled` is true. For each species, it removes the reactions of that species. Then it integrates the linearised change of the mass fractions along each screened idt trajectory, up to the sample at `lk.sample_fraction`. It does not solve the reactor again. The LK score of a species is the largest estimated shift of the ignition delay time over the screened trajectories. Each shift is a fraction of the ignition delay time of its trajectory. The LK order sorts the species from the smallest to the largest score; equal scores keep the GA-SiG order. The stage runs on the CPU in float64, for every value of `device`.
+
+A chain unit is a sequence of species in which each member has one significant production reaction and one significant consumption reaction. The consumption reaction of each member is the production reaction of the next member. The removal of one member cuts the sequence, so the `lk_greedy` search removes a unit as one piece. The detection stage runs in `gasig run` when `units.detect` is true. It uses the reaction extents along the idt trajectories.
+
+Both stages need the idt mode. The LK stage and the `tail` scope of the detection also need the GA-SiG rank. `gasig run` needs PyTorch, so run the stages in the container. To add a stage to an earlier run, set `lk.enabled` or `units.detect` to true and use `--stage`:
+
+```bash
+gasig run config.json --stage lk
+```
+
+```bash
+gasig run config.json --stage units
+```
+
+The stage then reads the idt trajectories: the precomputed files, or the solver results in `idt_data/`. When it needs the rank, it also reads `ranked_species.csv`.
+
+### LK greedy search
+
+The `lk_greedy` mode uses the LK order (`lk.output_file`), not the GA-SiG rank. It divides the order into pieces. A piece is a chain unit or one species. A unit takes the position of its first member in the LK order, and the search never divides it. The search does not use a unit with a protected member as a unit; it makes each other member a single piece. The search runs as follows:
+
+1. A piece is tier 0 when every member has an LK score at or below `reduction.search.tier0_score`.
+2. The search tests consecutive tier-0 pieces as one block of up to `block_size` species.
+3. If a block fails, the search divides it into two halves and tests each half. It continues down to single pieces.
+4. Each other piece gets its own test. A failed piece stays in the mechanism.
+5. With `pass2_tolerance`, a second pass starts from the result of the first pass. It tests each kept piece again, alone and in order, at the second tolerance.
+
+The selection is the mechanism at the end of the first pass, at `reduction.error_tolerance`. When the second pass removes at least one piece, it writes one more mechanism file, `reduced_<n>sp.yaml`, with its own size. `reduction.stop_error` and `robust_window` do not apply. The search does not test the same set of removed species twice at the same tolerance. When the tests reach `max_evaluations`, the other pieces stay untested, and no second pass runs.
+
+To use the mode:
+
+1. Set `lk.enabled` to true. If you want chain units, set `units.detect` to true.
+2. Set `reduction.search.mode` to `lk_greedy` and set `reduction.error_tolerance`.
+3. Run `gasig run config.json`.
+4. Run `gasig reduce config.json`.
+5. Run `gasig report config.json`.
+
+Table 6. Keys of the features under development
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `reduction.search.block_size` | integer | `16` | `lk_greedy`: upper limit of species in one block of tier-0 pieces; `1` tests every piece alone |
+| `reduction.search.tier0_score` | number | `0.003` | `lk_greedy`: a piece is tier 0 when every member has an LK score at or below this value |
+| `reduction.search.pass2_tolerance` | number or null | `null` | `lk_greedy`: tolerance of the second pass; at least `reduction.error_tolerance`; `null` makes no second pass |
+| `reduction.search.units` | list or null | `null` | `lk_greedy`: chain units as lists of species names; `null` reads `units.output_file`. Without that file, every species is its own piece |
+| `lk.enabled` | boolean | `false` | Run the LK stage after the rank; needs the idt mode |
+| `lk.trajectories` | list or null | `null` | Indices of the idt trajectories to screen, in the order of `trajectories_idt.json`; `null` screens every trajectory |
+| `lk.sample_fraction` | number | `0.5` | The stage takes the LK score at the stored sample nearest to this fraction of the ignition delay time of the trajectory; in (0, 1] |
+| `lk.rate_law` | string | `corrected` | Rate law of the LK Jacobians: `original` or `corrected` |
+| `lk.output_file` | string | `lk_order.csv` | LK order in `output_dir`; `lk_greedy` reads this file |
+| `units.detect` | boolean | `false` | Run the detection of chain units after the rank; needs the idt mode |
+| `units.scope` | string | `all` | `all` examines every removable species; `tail` examines only the removable species below the median GA-SiG importance of the removable species |
+| `units.share` | number | `0.01` | A reaction is significant for a species when it gives more than this share of the time-integrated production, or consumption, of the species |
+| `units.output_file` | string | `chain_units.json` | Detected units in `output_dir`; `lk_greedy` reads this file when `reduction.search.units` is `null` |
+
+`example/methane/config_ch4_lk_greedy.json` holds a complete configuration. It burns methane with USC Mech II at 12 ignition conditions: 1200, 1400 and 1600 K, 1 and 10 atm, phi 0.5 and 1.0. The tolerance is 15 percent, and the second pass is at 20 percent. In the CPU container on one laptop, `gasig run` took 511 s, and the LK stage took 326 s of this time. `gasig reduce` made 33 tests in 14 s. The first pass kept 19 species, and the second pass kept 18. The detection found no chain unit in this case.
+
 ## Tests
 
 The tests use USC Mech II. The solver tests burn methane. The regression tests use the shipped ethylene trajectories. Run the tests in the container from the repository folder:
@@ -324,6 +418,9 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 | Symptom | Cause | Action |
 |---|---|---|
 | `Configuration error: Unknown key` | A key name has a typo | Compare the key with `gasig template` |
+| `Unknown key 'lk'` or `'units'`, or `lk_greedy` is not an allowed mode, in the container | The image holds an older version of the package | Build the image again from the current source |
+| `lk_order.csv is missing; the lk_greedy mode reads the LK order` | The run had no LK stage | Set `lk.enabled` to true. Then run `gasig run config.json --stage lk` |
+| `no chain units: ... is missing` in `reduce.log` | The run had no detection stage, and `reduction.search.units` is `null` | No action is necessary: every species is its own piece. To use units, set `units.detect` to true. Then run `gasig run config.json --stage units` |
 | `device 'cuda' was requested but CUDA is not available` | No GPU, no driver, or the container has no `--gpus all` | Set `device` to `auto` or `cpu`, or add `--gpus all` |
 | `The torch rate law does not reproduce Cantera` | The mechanism has a reaction type that the corrected rate law does not support | Report the reaction named in the message, or use `rate_law: "original"` |
 | `the reference species ... peaks at the first sample` | The reference species is a reactant or a diluent | Use a radical such as `OH`, or `ignition_criterion: "max_dTdt"` |
@@ -348,6 +445,7 @@ Add `--gpus all` to include the GPU tests. Add `-m "not slow"` to skip the end-t
 - The sensitivity integration is serial over trajectories. One trajectory of a 1833-species mechanism took approximately 10 min on an NVIDIA L4 GPU.
 - `gasig reduce` evaluates reduced mechanisms in memory and writes the selected mechanism only, not a file for every size.
 - The selection uses the ignition delay time. The flame speed is evaluated and reported, but it does not decide the selection.
+- The greedy search, the LK stage, the chain units and the LK greedy search are under development. Only the methane example has an end-to-end evaluation. Refer to the section Features under development.
 
 ## Reference
 

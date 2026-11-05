@@ -106,7 +106,7 @@ Table 1. Keys to set for a reduction
 | run | `ranking.target_species` | The species that the reduction must predict, for example the fuel, O2, OH, H2O and CO2 |
 | reduce | `reduction.error_tolerance` | The allowed relative error of the ignition delay time, for example `0.05` |
 | reduce | `reduction.step`, `reduction.min_species` | The sweep resolution and the smallest size |
-| reduce | `reduction.search.mode` | `full` for the whole curve; `adaptive` for large mechanisms; `greedy` for skeletal mechanisms |
+| reduce | `reduction.search.mode` | `full` for the whole curve; `adaptive` for large mechanisms. `greedy` and `lk_greedy` are under development; refer to section 3.4 |
 | reduce | `reduction.keep_species` | Species that must stay, besides the targets and the mixture species |
 | reduce | `reduction.idt`, `reduction.fs` | Evaluation conditions that differ from the solver conditions |
 | report | `report.T_points` | Temperatures per pressure and equivalence ratio in the comparison |
@@ -153,13 +153,14 @@ docker run --rm -v "${PWD}:/workspace" ga-sig:cpu reduce config.json
 
 The command removes species in rank order, builds every reduced mechanism in memory and computes the ignition delay time at the evaluation conditions. With `reduction.error_tolerance` it selects the smallest mechanism within the tolerance and writes it as `reduced_<n>sp.yaml`.
 
-Three search modes exist:
+Two search modes are stable:
 
 - `full` evaluates every size from the detailed mechanism down to `reduction.min_species`, `reduction.step` species at a time. Use it for mechanisms with up to a few hundred species, and whenever you want the complete error curve.
 - `adaptive` evaluates a coarse set of sizes and probes the largest importance gaps of the rank. It refines every crossing of the tolerance by bisection and reports the intervals it did not refine. Use it for large mechanisms. Set `reduction.search.max_evaluations` to bound the cost.
-- `greedy` tests one species at a time in rank order. A species whose removal takes the error above the tolerance stays in the mechanism, and the pass continues with the next species. Use it when a size fails while most of the later species are harmless. The pass then keeps the few species that matter. A failed test stops at the first condition above the tolerance. It costs one ignition solve when that condition comes first in the error order. An accepted removal costs a full evaluation. Set `reduction.search.max_evaluations` to bound the number of tests.
 
-With the early exit (`reduction.search.early_exit`, on by default in adaptive and greedy mode), a size stops at the first condition above the tolerance. Its error in the table is then a lower bound, marked `complete: false`.
+Two more modes, `greedy` and `lk_greedy`, are under development. Section 3.4 describes them.
+
+With the early exit (`reduction.search.early_exit`, on by default in adaptive, greedy and lk_greedy mode), a size stops at the first condition above the tolerance. Its error in the table is then a lower bound, marked `complete: false`.
 
 ### 3.3 Report
 
@@ -176,6 +177,43 @@ docker run --rm -v "${PWD}:/workspace" ga-sig:cpu report config.json --mechanism
 ```
 
 The command needs no sweep. The package looks for the file in the current folder, then in the output folder, then beside the configuration file. It uses the evaluation conditions of the configuration and, with `reduction.evaluate_fs`, the flame conditions. It writes the folder `report_<name>/` and the log `report_<name>.log`. Set `reduction.idt.T_K` to the two ends of the temperature range. Set `report.T_points` to the number of temperatures; the report fills the range with equal steps.
+
+### 3.4 Search modes under development
+
+The modes `greedy` and `lk_greedy` go beyond the method of the manuscript. The manuscript gives no evidence for them. Only the methane example has an end-to-end evaluation. Their keys, outputs and results can change in a later version.
+
+**CAUTION:** These modes can give a reduced mechanism with a large error. You use them at your own risk. Compare each reduced mechanism with the detailed mechanism before you use it, for example with `gasig report --mechanism`.
+
+The `greedy` mode tests one species at a time in rank order. A species whose removal takes the error above the tolerance stays in the mechanism, and the search continues with the next species. Use it if a size fails but most of the later species have no effect. A failed test stops at the first condition above the tolerance. An accepted removal costs a full evaluation. Set `reduction.search.max_evaluations` to bound the number of tests.
+
+The `lk_greedy` mode uses the order of the linearised knockout (LK), not the GA-SiG rank. The LK stage of `gasig run` estimates the effect of the removal of each species along the stored ignition trajectories. The search tests this order in pieces: one species, or one chain unit that it removes as a whole. It tests the pieces with a very small LK score in blocks. An optional second pass tests the kept pieces again at a second tolerance. To use the mode:
+
+1. Set `lk.enabled` to true. If you want chain units, set `units.detect` to true.
+2. Set `reduction.search.mode` to `lk_greedy`, and set `reduction.error_tolerance`.
+3. Optional: set `reduction.search.pass2_tolerance` for the second pass.
+4. Run the three steps:
+
+   ```bash
+   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu run config.json
+   ```
+
+   ```bash
+   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu reduce config.json
+   ```
+
+   ```bash
+   docker run --rm -v "${PWD}:/workspace" ga-sig:cpu report config.json
+   ```
+
+To add the LK stage to an earlier run, use this command:
+
+```bash
+docker run --rm -v "${PWD}:/workspace" ga-sig:cpu run config.json --stage lk
+```
+
+The README, section Features under development, gives the method, the keys and the outputs. `example/methane/config_ch4_lk_greedy.json` is a complete configuration: on 12 methane ignition conditions it kept 19 species at 15 percent and 18 species at 20 percent.
+
+**NOTE:** An image built before the `lk_greedy` mode rejects the `lk` and `units` keys. In that case, build the image again from the current source.
 
 ### Validate a rank without Docker
 
@@ -218,7 +256,8 @@ Table 3. Files of a complete reduction
 |---|---|
 | `ranked_species.csv` | The rank, from the least to the most important species, with the importance |
 | `summary.json`, `gasig.log` | The run summary and its log |
-| `reduction_sweep.csv` | One row per evaluated size, or per tested species in greedy mode: species, reactions, maximum and mean IDT error, unignited cases, solver failures, flame-speed error, `complete`, the species removed since the size above, `kept_back`, seconds |
+| `lk_order.csv`, `lk_scores.npy`, `chain_units.json` | Under development: the LK order, the LK scores per trajectory and the chain units, from `gasig run` with `lk.enabled` and `units.detect` |
+| `reduction_sweep.csv` | One row per evaluated size, or per test in `greedy` and `lk_greedy` mode: species, reactions, maximum and mean IDT error, unignited cases, solver failures, flame-speed error, `complete`, the species removed since the size above, `kept_back`, seconds |
 | `reduction_sweep.json` | The same rows with every ignition delay time, the removal order (the accepted removals in greedy mode, with the rank in `rank_removal_order`), the search record and the selection; written after every size, `status` is `running` until the end |
 | `reduced_<n>sp.yaml` | The selected mechanism |
 | `reduce.log` | The log of the sweep; it holds the traceback of a failure |
@@ -264,7 +303,9 @@ The README, section Problems and causes, lists the error messages and the action
 | `The mechanism has species that are not in the rank file` | Run `gasig rank` with this mechanism before `gasig reduce` |
 | `Matplotlib is not installed` | Install the report extra: `pip install ".[report]"`; the tables are written in every case |
 | The sweep is slow | Use `reduction.search.mode: "adaptive"`, fewer evaluation conditions, or `max_evaluations` |
-| The sweep stops at a large size although the later species are harmless | Use `reduction.search.mode: "greedy"`; a species early in the removal order breaks the tolerance at one condition |
+| The sweep stops at a large size although the later species are harmless | A species early in the removal order breaks the tolerance at one condition. Try `reduction.search.mode: "greedy"` (under development, section 3.4) |
+| `lk_order.csv is missing; the lk_greedy mode reads the LK order` | Set `lk.enabled` to true. Then run the `run` command of section 3.4 with `--stage lk` |
+| `Unknown key 'lk'` in the container | The image holds an older version of the package. Build the image again from the current source |
 | `Zero-RK is not available` | Build the CPU image without `--target gasig`, or set `fs.solver.zerork.home` or `ZERORK_HOME` |
 | `the flame solver failed` with the `zerork` backend | The condition gets `inf` (`gasig reduce`) or no value (`gasig report`) and the run continues. A `gave no flame` line of an MPI attempt before the serial retry is normal. Set `fs.solver.zerork.work_dir` to a folder in the run folder and `keep_files` to true; read `log_<n>` in the subfolder of that flame |
 
